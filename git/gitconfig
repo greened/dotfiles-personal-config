@@ -1,0 +1,6 @@
+# Personal git entry point (symlinked to ~/.gitconfig by this overlay's link.sh).
+# Layer the generic base first, then this machine's overlay includes (identity
+# and any company settings), which link.sh materializes into ~/.gitconfig.local.
+[include]
+	path = ~/lib/dotfiles/git/gitconfig
+	path = ~/.gitconfig.local
