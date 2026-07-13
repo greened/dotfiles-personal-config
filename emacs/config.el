@@ -133,8 +133,9 @@
 (with-eval-after-load 'quite
   (setq git-mirv-name "mirv")
 
-  (setq mirv-prefix-plist-list '((:name "release" :prefix 0)
-				 (:name "debug" :prefix 1)))
+  ;; Prefixes: list order is the C-u dispatch index (release = no prefix,
+  ;; debug = one C-u).
+  (setq mirv-prefix-plist-list '("release" "debug"))
 
   (setq mirv-transform-plist-list '((:name "clang" :func identity)
 				    (:name "gcc" :func upcase)))
@@ -147,16 +148,14 @@
 		       :root-list ,mirv-root-list
 		       :key-files ("repositories.manifest")))
 
-  (setq mirv-hydra-heads (compose-project git-mirv-name
-					  "mirv"
-					  mirv-project-descriptor
-					  "M"
-					  "all"
-					  command-plist-list
-					  mirv-prefix-plist-list
-					  mirv-transform-plist-list
-					  "/bin/bash -c '. /usr/share/virtualenvwrapper/virtualenvwrapper.sh; workon mirv;"
-					  "-- --force'"))
+  (setq mirv-hydra-heads
+        (quite-define-project
+         (list :git-name git-mirv-name :name "mirv"
+               :descriptor mirv-project-descriptor :prefix-key "M" :target "all"
+               :commands command-plist-list :prefixes mirv-prefix-plist-list
+               :transforms mirv-transform-plist-list
+               :command-prefix "/bin/bash -c '. /usr/share/virtualenvwrapper/virtualenvwrapper.sh; workon mirv;"
+               :command-postfix "-- --force'")))
 
   (setq mirv-build-hydra-heads (append mirv-hydra-heads))
 
