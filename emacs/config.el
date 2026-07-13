@@ -164,7 +164,7 @@
 	   ,@(append
 	      mirv-build-hydra-heads)))
 
-  (define-key quite-command-map (kbd "ph")
+  (define-key quite-command-map (kbd "Mh")
 		   (lambda () (interactive) (mirv-hydra-build/body))))
 
 ;;; Notmuch: LLVM project and C++ standards mailing-list saved searches.
