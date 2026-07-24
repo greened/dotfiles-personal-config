@@ -1,0 +1,5 @@
+# Personal identity (dag@obbligato.org / GitHub: greened).
+# Included by gitconfig via includeIf for personal repo locations.
+[user]
+	name = David Greene
+	email = dag@obbligato.org

@@ -47,4 +47,25 @@ if [ "$hook" = "commit-msg" ]; then
     rm -f "$tmp"
   fi
 fi
+
+# 3) pre-commit policy: ensure the author identity matches the repo's realm.
+#    Personal -> David Greene <dag@obbligato.org> (GitHub greened); work/work
+#    -> <you@work.example> (GitHub your-work-account). This backs up the
+#    includeIf rules in gitconfig (which cover the personal path roots).
+if [ "$hook" = "pre-commit" ]; then
+  origin="$(git config --get remote.origin.url 2>/dev/null || true)"
+  top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  want_name="David Greene"; want_email="dag@obbligato.org"   # default: personal
+  case "$origin" in *[:/]work/*|*[:/]work/*) want_email="you@work.example" ;; esac
+  case "$top/"   in "$HOME"/ws/*) want_email="you@work.example" ;; esac
+  case "$origin" in *[:/]greened/*) want_email="dag@obbligato.org" ;; esac
+  case "$top/"   in "$HOME"/src/*|"$HOME"/projects/*|"$HOME"/lib/*) want_email="dag@obbligato.org" ;; esac
+  cur_email="$(git config user.email 2>/dev/null || true)"
+  if [ "$cur_email" != "$want_email" ]; then
+    git config user.name "$want_name"
+    git config user.email "$want_email"
+    echo "identity: set author to $want_name <$want_email> for this repo; re-run your commit." >&2
+    exit 1
+  fi
+fi
 exit 0

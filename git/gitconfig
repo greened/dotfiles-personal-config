@@ -8,3 +8,13 @@
 	# Global hook dispatcher: chains to any repo-local hook, and strips AI
 	# co-author trailers on non-work (personal) repos. See git/hooks/_chain.
 	hooksPath = ~/lib/dotfiles-overlays/personal-config/git/hooks
+# Per-location author identity. Repos under personal roots use dag@obbligato.org
+# (GitHub: greened); everything else defaults to the work identity in
+# ~/.gitconfig.local. The pre-commit hook (git/hooks/_chain) is the backstop that
+# also covers greened-origin repos outside these paths.
+[includeIf "gitdir:~/src/"]
+	path = ~/lib/dotfiles-overlays/personal-config/git/identity-personal
+[includeIf "gitdir:~/projects/"]
+	path = ~/lib/dotfiles-overlays/personal-config/git/identity-personal
+[includeIf "gitdir:~/lib/"]
+	path = ~/lib/dotfiles-overlays/personal-config/git/identity-personal
