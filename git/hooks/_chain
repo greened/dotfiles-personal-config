@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Global git hook dispatcher, pointed at by core.hooksPath (set in the personal
+# gitconfig overlay). Symlinked as commit-msg, pre-commit, etc.
+#
+# It does two things, in order:
+#   1. Chains to the repo's OWN hook of the same name (in <gitdir>/hooks), so a
+#      global hooksPath does not silently disable per-repo hooks.
+#   2. Applies personal policy: on NON-work repos, strip AI co-author
+#      trailers (Claude / anthropic) from the commit message. work/work
+#      repos keep their trailers untouched. Human co-authors are never stripped.
+#
+# Rationale: personal repos must never carry an AI trailer; this enforces it
+# deterministically instead of relying on the author (human or agent) to remember.
+set -euo pipefail
+hook="$(basename "$0")"
+
+# 1) Chain to the repo-local hook of the same name, if present and not ourselves.
+gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
+if [ -n "$gitdir" ]; then
+  local_hook="$gitdir/hooks/$hook"
+  self="$(cd "$(dirname "$0")" && pwd)/$hook"
+  if [ -x "$local_hook" ] && [ "$local_hook" != "$self" ]; then
+    "$local_hook" "$@" || exit $?
+  fi
+fi
+
+# 2) commit-msg policy: strip AI trailers unless this is a work/work repo.
+if [ "$hook" = "commit-msg" ]; then
+  msg="$1"
+  origin="$(git config --get remote.origin.url 2>/dev/null || true)"
+  email="$(git config user.email 2>/dev/null || true)"
+  top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  # Default: treat as personal (strip). work/work signals flip it to keep;
+  # personal roots / a greened origin flip it back to strip (last match wins).
+  strip=1
+  case "$origin" in *[:/]work/*|*[:/]work/*) strip=0 ;; esac
+  case "$email"  in *@work.net) strip=0 ;; esac
+  case "$top/"   in "$HOME"/ws/*) strip=0 ;; esac
+  case "$top/"   in "$HOME"/src/*|"$HOME"/projects/*|"$HOME"/lib/*) strip=1 ;; esac
+  case "$origin" in *[:/]greened/*) strip=1 ;; esac
+  if [ "$strip" -eq 1 ]; then
+    tmp="$(mktemp)"
+    # Drop AI co-author/assisted-by lines only (keep human co-authors).
+    grep -viE '^(co-authored-by|assisted-by):[[:space:]].*(claude|anthropic)' "$msg" > "$tmp" || true
+    # Remove any blank lines left dangling at the end.
+    awk '{a[NR]=$0} END{n=NR; while(n>0 && a[n] ~ /^[[:space:]]*$/) n--; for(i=1;i<=n;i++) print a[i]}' "$tmp" > "$msg"
+    rm -f "$tmp"
+  fi
+fi
+exit 0

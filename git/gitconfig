@@ -4,3 +4,7 @@
 [include]
 	path = ~/lib/dotfiles/git/gitconfig
 	path = ~/.gitconfig.local
+[core]
+	# Global hook dispatcher: chains to any repo-local hook, and strips AI
+	# co-author trailers on non-work (personal) repos. See git/hooks/_chain.
+	hooksPath = ~/lib/dotfiles-overlays/personal-config/git/hooks
