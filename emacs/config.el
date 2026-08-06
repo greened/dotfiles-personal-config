@@ -183,7 +183,18 @@
           (list :build-backend 'shell :build-command "./check.sh"
                 :test-backend  'shell :test-command  "./check.sh"))
     (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
-          'ff-merge)))
+          'ff-merge))
+
+  ;; quite builds with Cask and a Makefile rather than a ./check.sh, and cask
+  ;; lives under ~/.cask on the build host, so it needs its own build and test
+  ;; commands. `make deps' populates the Cask sandbox in a fresh worktree first.
+  (setf (alist-get "greened/quite" gaffer-repo-build-backends nil nil #'equal)
+        (list :build-backend 'shell
+              :build-command "PATH=$HOME/.cask/bin:$PATH make deps compile"
+              :test-backend  'shell
+              :test-command  "PATH=$HOME/.cask/bin:$PATH make test"))
+  (setf (alist-get "greened/quite" gaffer-repo-publish-strategies nil nil #'equal)
+        'ff-merge))
 
 ;;; Notmuch: LLVM project and C++ standards mailing-list saved searches.
 
