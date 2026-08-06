@@ -178,7 +178,7 @@
 ;;; green.
 
 (with-eval-after-load 'gaffer
-  (dolist (repo '("greened/gazette"))
+  (dolist (repo '("greened/gazette" "greened/prevue"))
     (setf (alist-get repo gaffer-repo-build-backends nil nil #'equal)
           (list :build-backend 'shell :build-command "./check.sh"
                 :test-backend  'shell :test-command  "./check.sh"))
