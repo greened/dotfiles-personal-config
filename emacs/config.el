@@ -167,6 +167,24 @@
   (define-key quite-command-map (kbd "Mh")
 		   (lambda () (interactive) (mirv-hydra-build/body))))
 
+;;; gaffer: per-repo build + publish for my personal greened Emacs packages.
+;;; The base sets no build backend and the work overlay pins the *global*
+;;; backend to `quite'; these packages build with their own `./check.sh'
+;;; (byte-compile warnings-fatal + buttercup) and, using no PRs, publish by
+;;; fast-forward merge to the default branch.  So give each a per-repo override
+;;; instead of letting the global `quite' leak onto a repo quite never knew.
+;;; `emacs' resolves on the build host's PATH, so the command needs no explicit
+;;; binary.  Add a repo to the list once its change has driven through gaffer
+;;; green.
+
+(with-eval-after-load 'gaffer
+  (dolist (repo '("greened/gazette"))
+    (setf (alist-get repo gaffer-repo-build-backends nil nil #'equal)
+          (list :build-backend 'shell :build-command "./check.sh"
+                :test-backend  'shell :test-command  "./check.sh"))
+    (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
+          'ff-merge)))
+
 ;;; Notmuch: LLVM project and C++ standards mailing-list saved searches.
 
 (with-eval-after-load 'notmuch
