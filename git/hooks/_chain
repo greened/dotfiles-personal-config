@@ -68,4 +68,49 @@ if [ "$hook" = "pre-commit" ]; then
     exit 1
   fi
 fi
+
+# 4) pre-commit policy: refuse to commit a staged line that looks like a live
+#    credential.
+#
+#    Scans ADDED LINES ONLY, not whole files, for two reasons: it stays fast on a
+#    big repo, and a file that legitimately documents a credential SHAPE does not
+#    re-flag on every later commit. Patterns require a realistic secret length, so
+#    prose like `Authorization: token ghp_...` is not a hit while a real 36-char
+#    token is.
+#
+#    Rationale: same as the commit-msg policy above. On 2026-08-28 a sync pass ran
+#    this exact scan by hand as `grep -lE ... && echo HITS`, printed its banner,
+#    and then staged, committed and pushed the flagged file anyway, because a
+#    reporting side effect is not a gate. A hook cannot be forgotten.
+if [ "$hook" = "pre-commit" ]; then
+  secret_re='(ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9]{20,}'
+  secret_re="$secret_re"'|github_pat_[A-Za-z0-9_]{20,}'
+  secret_re="$secret_re"'|xox[bpsa]-[A-Za-z0-9][A-Za-z0-9-]{9,}'
+  secret_re="$secret_re"'|AKIA[0-9A-Z]{16}'
+  secret_re="$secret_re"'|sk-ant-[A-Za-z0-9_-]{20,}'
+  secret_re="$secret_re"'|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+
+  secret_fail=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    # -a: treat as text; a staged binary should not abort the scan.
+    added="$(git diff --cached -U0 --diff-filter=ACM -- "$f" 2>/dev/null \
+               | grep -a '^+' | grep -av '^+++' || true)"
+    [ -n "$added" ] || continue
+    matched="$(printf '%s\n' "$added" | grep -aoE "$secret_re" || true)"
+    if [ -n "$matched" ]; then
+      secret_fail=1
+      echo "secret-scan: possible credential in staged $f" >&2
+      # Never echo the secret: show only enough to identify the kind.
+      printf '%s\n' "$matched" | sed -E 's/(.{10}).*/  \1<redacted>/' | sort -u >&2
+    fi
+  done < <(git diff --cached --name-only --diff-filter=ACM 2>/dev/null)
+
+  if [ "$secret_fail" -ne 0 ]; then
+    echo "secret-scan: refusing to commit. Remove the credential and re-stage." >&2
+    echo "secret-scan: if this is a documented example, shorten it so it cannot" >&2
+    echo "             be mistaken for a live value (e.g. ghp_... not 36 chars)." >&2
+    exit 1
+  fi
+fi
 exit 0
