@@ -5,14 +5,85 @@
 # It does two things, in order:
 #   1. Chains to the repo's OWN hook of the same name (in <gitdir>/hooks), so a
 #      global hooksPath does not silently disable per-repo hooks.
-#   2. Applies personal policy: on NON-work repos, strip AI co-author
-#      trailers (Claude / anthropic) from the commit message. work/work
-#      repos keep their trailers untouched. Human co-authors are never stripped.
+#   2. Applies personal policy: on personal repos, strip AI co-author trailers
+#      (Claude / anthropic) from the commit message. Work repos keep their
+#      trailers untouched. Human co-authors are never stripped.
 #
 # Rationale: personal repos must never carry an AI trailer; this enforces it
 # deterministically instead of relying on the author (human or agent) to remember.
 set -euo pipefail
 hook="$(basename "$0")"
+
+# Where the work signals that NAME the employer live.  Not in this file: this
+# repo is published, and a list of "these are my employer's org and mail domain"
+# sitting in a published personal repo is the leak the scrub below protects
+# against.  Same reasoning and same shape as the scrub's term list.
+hook_realm_file() {
+  local f
+  f="$(git config --get realm.workFile 2>/dev/null || true)"
+  [ -n "$f" ] || f="$HOME/.config/git-realm-work"
+  printf '%s' "$f"
+}
+
+# First value of a single-valued rule (e.g. `identity') from that file.
+hook_realm_value() {
+  local f line
+  f="$(hook_realm_file)"
+  [ -r "$f" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    case "$line" in
+      "$1 "*) printf '%s' "${line#"$1" }" | tr -d '[:space:]'; return 0 ;;
+    esac
+  done < "$f"
+}
+
+# Which realm is this repo in?  Echoes "personal" or "work".
+#
+# Last match wins, deliberately: a work origin or work email says work, and a
+# greened origin or a personal path root says personal and overrides it -- a
+# personal repo cloned under a work checkout root still commits as personal.
+# Factored out because three policies below ask the same question, and three
+# copies of a last-match-wins chain is three chances to answer it differently.
+#
+# A MISSING signal file fails CLOSED: no work origin is recognised, so a work
+# repo looks personal, the scrub runs and trailers are stripped.  That
+# over-applies the personal rules rather than leaking.
+hook_realm() {
+  local origin email top realm f line kind glob
+  origin="$(git config --get remote.origin.url 2>/dev/null || true)"
+  email="$(git config user.email 2>/dev/null || true)"
+  top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  realm=personal
+  f="$(hook_realm_file)"
+  if [ -r "$f" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line%%#*}"
+      kind="${line%% *}"; glob="${line#* }"
+      [ -n "$kind" ] && [ "$kind" != "$line" ] || continue
+      case "$kind" in
+        origin) case "$origin" in $glob) realm=work ;; esac ;;
+        email)  case "$email"  in $glob) realm=work ;; esac ;;
+      esac
+    done < "$f"
+  else
+    echo "realm: no work-signal file at $f -- employer origins NOT recognised," >&2
+    echo "realm: so every repo is treated as personal.  See git config realm.workFile." >&2
+  fi
+  case "$top/"   in "$HOME"/ws/*) realm=work ;; esac
+  case "$top/"   in "$HOME"/src/*|"$HOME"/projects/*|"$HOME"/lib/*) realm=personal ;; esac
+  # A repo owned by the work GitHub ACCOUNT is work-realm even when the local
+  # identity is personal and the checkout sits outside any work path root --
+  # account ownership is the distinguisher, not visibility or location.  That is
+  # what memory-personal and skills-personal are: private repos on the work
+  # account, holding work-tiered content.  Without this they defaulted to
+  # personal and the scrub rejected any Jira key, which is most of what they
+  # store.  Matched by the account's trailing `-cb' owner segment rather than
+  # spelled out, since the shape rule below would flag the handle itself.
+  case "$origin" in *[:/]*-cb/*) realm=work ;; esac
+  case "$origin" in *[:/]greened/*) realm=personal ;; esac
+  printf '%s' "$realm"
+}
 
 # 1) Chain to the repo-local hook of the same name, if present and not ourselves.
 gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
@@ -24,21 +95,10 @@ if [ -n "$gitdir" ]; then
   fi
 fi
 
-# 2) commit-msg policy: strip AI trailers unless this is a work/work repo.
+# 2) commit-msg policy: strip AI trailers unless this is a work repo.
 if [ "$hook" = "commit-msg" ]; then
   msg="$1"
-  origin="$(git config --get remote.origin.url 2>/dev/null || true)"
-  email="$(git config user.email 2>/dev/null || true)"
-  top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  # Default: treat as personal (strip). work/work signals flip it to keep;
-  # personal roots / a greened origin flip it back to strip (last match wins).
-  strip=1
-  case "$origin" in *[:/]work/*|*[:/]work/*) strip=0 ;; esac
-  case "$email"  in *@work.net) strip=0 ;; esac
-  case "$top/"   in "$HOME"/ws/*) strip=0 ;; esac
-  case "$top/"   in "$HOME"/src/*|"$HOME"/projects/*|"$HOME"/lib/*) strip=1 ;; esac
-  case "$origin" in *[:/]greened/*) strip=1 ;; esac
-  if [ "$strip" -eq 1 ]; then
+  if [ "$(hook_realm)" = personal ]; then
     tmp="$(mktemp)"
     # Drop AI co-author/assisted-by lines only (keep human co-authors).
     grep -viE '^(co-authored-by|assisted-by):[[:space:]].*(claude|anthropic)' "$msg" > "$tmp" || true
@@ -49,17 +109,21 @@ if [ "$hook" = "commit-msg" ]; then
 fi
 
 # 3) pre-commit policy: ensure the author identity matches the repo's realm.
-#    Personal -> David Greene <dag@obbligato.org> (GitHub greened); work/work
-#    -> <you@work.example> (GitHub your-work-account). This backs up the
+#    Personal -> David Greene <dag@obbligato.org> (GitHub greened); work -> the
+#    `identity' address from the work-signal file, which is where the employer
+#    address lives so this published file does not carry it.  Backs up the
 #    includeIf rules in gitconfig (which cover the personal path roots).
+#
+#    No identity rule = no work address to enforce, so the check is SKIPPED for
+#    work repos rather than rewriting them to the personal address, which would
+#    be the wrong direction and would misattribute work commits.
 if [ "$hook" = "pre-commit" ]; then
-  origin="$(git config --get remote.origin.url 2>/dev/null || true)"
-  top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  want_name="David Greene"; want_email="dag@obbligato.org"   # default: personal
-  case "$origin" in *[:/]work/*|*[:/]work/*) want_email="you@work.example" ;; esac
-  case "$top/"   in "$HOME"/ws/*) want_email="you@work.example" ;; esac
-  case "$origin" in *[:/]greened/*) want_email="dag@obbligato.org" ;; esac
-  case "$top/"   in "$HOME"/src/*|"$HOME"/projects/*|"$HOME"/lib/*) want_email="dag@obbligato.org" ;; esac
+  want_name="David Greene"
+  if [ "$(hook_realm)" = work ]; then
+    want_email="$(hook_realm_value identity)"
+  else
+    want_email="dag@obbligato.org"
+  fi
   cur_email="$(git config user.email 2>/dev/null || true)"
   if [ "$cur_email" != "$want_email" ]; then
     git config user.name "$want_name"
@@ -111,6 +175,110 @@ if [ "$hook" = "pre-commit" ]; then
     echo "secret-scan: if this is a documented example, shorten it so it cannot" >&2
     echo "             be mistaken for a live value (e.g. ghp_... not 36 chars)." >&2
     exit 1
+  fi
+fi
+# 5) pre-commit / pre-push policy: refuse to put EMPLOYER information into a
+#    personal repo.
+#
+#    Two halves, because they fail differently.
+#
+#    LITERAL terms -- the company name, internal repo and subsystem names,
+#    colleague logins -- come from a file OUTSIDE any repo (default
+#    ~/.config/git-scrub-terms, override with `git config scrub.termsFile').
+#    They cannot be committed anywhere: a list of "these are my employer's
+#    internal names" living in a personal repo IS the leak it protects against.
+#    One term per line, blank lines and # comments ignored, matched
+#    case-insensitively as extended regexps.
+#
+#    SHAPE rules are built in here, because they generalise and name nobody:
+#    a work-account handle suffix, a Jira-style key, the work NFS root.
+#
+#    This is a RATCHET, not a guarantee.  On 2026-09-01 a full history scrub of
+#    prevue took five passes: each one caught what the last had missed, because
+#    a deny-list only ever catches what you already knew to look for.  The names
+#    that got through -- a colleague login nobody had written down, an internal
+#    filename, a branch name -- were found by sweeping for SHAPE and position,
+#    not by name.  So: add every term you ever find to the file, and keep
+#    running a deliberate sweep before anything is published.  What this hook
+#    buys is that no leak you have already found can happen twice.
+if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
+  if [ "$(hook_realm)" = personal ]; then
+    terms_file="$(git config --get scrub.termsFile 2>/dev/null || true)"
+    [ -n "$terms_file" ] || terms_file="$HOME/.config/git-scrub-terms"
+
+    scrub_re=''
+    if [ -r "$terms_file" ]; then
+      # strip comments and blanks, join with |
+      scrub_re="$(sed -e 's/#.*$//' -e 's/[[:space:]]*$//' "$terms_file" \
+                    | grep -v '^[[:space:]]*$' | paste -sd'|' -)"
+    else
+      echo "scrub: no term list at $terms_file -- literal terms NOT checked." >&2
+      echo "scrub: create it (one term per line) or set scrub.termsFile." >&2
+    fi
+
+    # Shape rules: no employer name in them, so they are safe to keep in a
+    # repo-visible file too (see each project's check.sh).
+    # Plain ERE plus an exclusion filter, not a PCRE lookahead, so this is the
+    # IDENTICAL pair each project's check.sh runs (which must survive a CI image
+    # whose grep may lack PCRE).  Two copies is inherent to the split -- one
+    # runs on a machine with the term list, one runs in CI without it -- so keep
+    # them in step by hand.
+    shape_re='\b[a-z][a-z0-9]{1,20}-cb\b'          # work-account handle suffix
+    shape_re="$shape_re"'|(^|[^A-Za-z0-9/])/cb/[a-z]'  # work NFS root
+    shape_re="$shape_re"'|\b[A-Z]{2,6}-[0-9]{4,6}\b'  # Jira-style key
+    # 4+ digits already spares ISO-8601; these prefixes are excluded outright.
+    # CHANGE-NNNN is Atlassian's own public change id, not an employer key.
+    shape_skip='\b(ISO|UTF|RFC|SHA|AES|CVE|CHANGE)-[0-9]'
+
+
+    if [ "$hook" = "pre-commit" ]; then
+      changed="$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null)"
+      added_of() { git diff --cached -U0 --diff-filter=ACM -- "$1" 2>/dev/null \
+                     | grep -a '^+' | grep -av '^+++' || true; }
+    else
+      # pre-push: everything this push would publish that the remote lacks
+      remote_head="$(git rev-parse --verify -q "@{u}" 2>/dev/null || true)"
+      range="${remote_head:+$remote_head..}HEAD"
+      changed="$(git diff --name-only --diff-filter=ACM "$range" 2>/dev/null)"
+      added_of() { git diff -U0 --diff-filter=ACM "$range" -- "$1" 2>/dev/null \
+                     | grep -a '^+' | grep -av '^+++' || true; }
+    fi
+
+    scrub_fail=0
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      added="$(added_of "$f")"
+      [ -n "$added" ] || continue
+      # Two passes, and the case sensitivity is the point.  Shape rules are
+      # case-SENSITIVE: matched with -i, the Jira-key rule fires on any
+      # lowercase hyphen-digits string ("abc-1234"), which is everywhere.
+      # Literal terms are case-INSENSITIVE, since a name is a name however it
+      # is capitalised.
+      # The trailing `true' is load-bearing under `set -e': with no term list
+      # `scrub_re' is empty, the `if' is the group's last command, and a group
+      # ending in a false test makes the whole substitution non-zero, which
+      # aborts the commit -- silently, since the warning above looks like the
+      # only thing that happened.
+      hits="$( { printf '%s\n' "$added" | grep -avE "$shape_skip" \
+                   | grep -aoE "$shape_re" 2>/dev/null || true
+                 if [ -n "$scrub_re" ]; then
+                   printf '%s\n' "$added" | grep -aoiE "$scrub_re" 2>/dev/null || true
+                 fi
+                 true
+               } | sort -u )"
+      if [ -n "$hits" ]; then
+        scrub_fail=1
+        echo "scrub: employer information in $f" >&2
+        printf '%s\n' "$hits" | sed 's/^/  /' >&2
+      fi
+    done < <(printf '%s\n' "$changed")
+
+    if [ "$scrub_fail" -ne 0 ]; then
+      echo "scrub: refusing -- this is a personal repo." >&2
+      echo "scrub: use a fictional stand-in (the repos use acme/..., alice, bob)." >&2
+      echo "scrub: a genuine false positive means narrowing the rule, not skipping it." >&2
+      exit 1
+    fi
   fi
 fi
 exit 0
