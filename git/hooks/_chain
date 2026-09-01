@@ -216,19 +216,27 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
       echo "scrub: create it (one term per line) or set scrub.termsFile." >&2
     fi
 
-    # Shape rules: no employer name in them, so they are safe to keep in a
-    # repo-visible file too (see each project's check.sh).
-    # Plain ERE plus an exclusion filter, not a PCRE lookahead, so this is the
-    # IDENTICAL pair each project's check.sh runs (which must survive a CI image
-    # whose grep may lack PCRE).  Two copies is inherent to the split -- one
-    # runs on a machine with the term list, one runs in CI without it -- so keep
-    # them in step by hand.
-    shape_re='\b[a-z][a-z0-9]{1,20}-cb\b'          # work-account handle suffix
-    shape_re="$shape_re"'|(^|[^A-Za-z0-9/])/cb/[a-z]'  # work NFS root
-    shape_re="$shape_re"'|\b[A-Z]{2,6}-[0-9]{4,6}\b'  # Jira-style key
-    # 4+ digits already spares ISO-8601; these prefixes are excluded outright.
-    # CHANGE-NNNN is Atlassian's own public change id, not an employer key.
-    shape_skip='\b(ISO|UTF|RFC|SHA|AES|CVE|CHANGE)-[0-9]'
+    # Shape rules: no employer name in them, so they are safe in a repo-visible
+    # file.  Plain ERE plus an exclusion filter, not a PCRE lookahead, so it is
+    # the same pair each project's check.sh runs (which must survive a CI image
+    # whose grep may lack PCRE).  Those copies remain, because they run where
+    # this file is not available, and they are still kept in step by hand.
+    #
+    # What this DOES remove is the copy the guard would otherwise hold:
+    # scrub-selftest.sh sources the same file, so it asserts against the rules
+    # the hook actually enforces rather than a lookalike.
+    #
+    # A missing file fails CLOSED.  The scrub is what stands between a personal
+    # repo and employer information, so a broken install must stop the commit,
+    # not wave it through with nothing checked.
+    rules="$(cd "$(dirname "$0")" && pwd)/scrub-rules.sh"
+    if [ ! -r "$rules" ]; then
+      echo "scrub: cannot read $rules -- refusing." >&2
+      echo "scrub: without the shape rules, nothing is being checked." >&2
+      exit 1
+    fi
+    # shellcheck source=scrub-rules.sh
+    . "$rules"
 
 
     if [ "$hook" = "pre-commit" ]; then
@@ -259,7 +267,7 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
       # ending in a false test makes the whole substitution non-zero, which
       # aborts the commit -- silently, since the warning above looks like the
       # only thing that happened.
-      hits="$( { printf '%s\n' "$added" | grep -avE "$shape_skip" \
+      hits="$( { printf '%s\n' "$added" | sed -E "$shape_skip" \
                    | grep -aoE "$shape_re" 2>/dev/null || true
                  if [ -n "$scrub_re" ]; then
                    printf '%s\n' "$added" | grep -aoiE "$scrub_re" 2>/dev/null || true
