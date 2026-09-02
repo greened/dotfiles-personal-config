@@ -167,6 +167,63 @@
   (define-key quite-command-map (kbd "Mh")
 		   (lambda () (interactive) (mirv-hydra-build/body))))
 
+
+;;; quite: my personal repos, which build with their own tooling rather than
+;;; through git-project.  quite's `shell' build architecture runs a command's
+;;; :shell-command verbatim, so a repo with a hatch env or a ./check.sh is an
+;;; ordinary quite project -- prefix-key bindings and the usual verbs -- rather
+;;; than something the global `quite' backend has to be kept away from.
+;;; `quite-register-repo' then lets gaffer drive the same project headlessly,
+;;; so the interactive and the driven build are one definition.
+;;;
+;;; These projects have a single build flavor, so they declare no :prefixes and
+;;; no :transforms: the lone flavor is named by :target and there are no C-u
+;;; variants.
+
+(with-eval-after-load 'quite
+  ;; git-project builds with hatch.  `hatch build' is deliberately NOT the build
+  ;; verb: it writes dist/ into the worktree, and those artifacts are untracked,
+  ;; so they would surface as noise in every later worktree review.  `hatch env
+  ;; create' is idempotent, leaves nothing behind, and still fails when the
+  ;; environment cannot be built -- which is what a build gate is for.
+  (quite-define-project
+   (list :name "git-project"
+         :build-architecture 'shell
+         :descriptor '(:project-dir "git-project"
+                       :root-list ("/Users/dag/projects")
+                       :key-files ("pyproject.toml"))
+         :prefix-key "j"
+         :target "git-project"
+         :commands '((:name "build" :command "build" :key "b"
+                            :shell-command "hatch env create")
+                     (:name "check" :command "check" :key "k"
+                            :shell-command "hatch run test"))))
+  (quite-register-repo "greened/git-project"
+                       :project "git-project"
+                       :build-target "git-project"
+                       :test-target "git-project")
+
+  ;; gaffer checks itself with its own ./check.sh (byte-compile warnings-fatal,
+  ;; buttercup, then the scrub pass), the same script the Emacs packages use.
+  ;; Registering it here is what lets gaffer build and test its OWN items
+  ;; instead of falling through to the global `quite' backend, which knows
+  ;; nothing about the repo.
+  (quite-define-project
+   (list :name "gaffer"
+         :build-architecture 'shell
+         :descriptor '(:project-dir "gaffer"
+                       :root-list ("/Users/dag/projects")
+                       :key-files ("gaffer.el" "check.sh"))
+         :prefix-key "f"
+         :target "gaffer"
+         :commands '((:name "build" :command "build" :key "b"
+                            :shell-command "./check.sh")
+                     (:name "check" :command "check" :key "k"
+                            :shell-command "./check.sh"))))
+  (quite-register-repo "greened/gaffer"
+                       :project "gaffer"
+                       :build-target "gaffer"
+                       :test-target "gaffer"))
 ;;; gaffer: per-repo build + publish for my personal greened Emacs packages.
 ;;; The base sets no build backend and the work overlay pins the *global*
 ;;; backend to `quite'; these packages build with their own `./check.sh'
@@ -194,7 +251,17 @@
               :test-backend  'shell
               :test-command  "PATH=$HOME/.cask/bin:$PATH make test"))
   (setf (alist-get "greened/quite" gaffer-repo-publish-strategies nil nil #'equal)
-        'ff-merge))
+        'ff-merge)
+
+  ;; The Python packages build through quite (the block above), so they need no
+  ;; build-backend override -- only a publish strategy.  Without one the default
+  ;; resolution reaches its last clause: no PR number, not listed here, branch is
+  ;; not the default branch, so `open-pr'.  That would open a pull request on a
+  ;; repo I never use pull requests for.  They land the same way the Emacs
+  ;; packages do, by fast-forwarding the default branch.
+  (dolist (repo '("greened/git-project" "greened/git-project-core-plugins"))
+    (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
+          'ff-merge)))
 
 ;;; Notmuch: LLVM project and C++ standards mailing-list saved searches.
 
