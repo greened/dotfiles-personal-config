@@ -70,5 +70,57 @@ check "the work NFS root is caught"             " /$sfx/h"  "lives in $root"
 # write, and why matching case-insensitively would fire on ordinary prose.
 check "a lowercase hyphen-digits string is not a key" "" "the acme-1234 example"
 
+# --- literal terms -------------------------------------------------------
+# Built by `scrub_term_re' from a FAKE term list, so no real term appears here
+# and the cases stay readable.  Terms are matched case-insensitively, and the
+# boundary is added only to an edge that is a word character.
+terms="$(mktemp)"
+trap 'rm -f "$terms"' EXIT
+cat > "$terms" <<'TERMS'
+# a comment, ignored
+acorn
+alice
+/fake/
+host.example.net
+a+b
+TERMS
+term_re="$(scrub_term_re "$terms")"
+
+# check_term DESCRIPTION EXPECTED-COUNT INPUT
+check_term() {
+  local desc="$1" expected="$2" input="$3" got
+  got="$(printf '%s\n' "$input" | grep -acoiE "$term_re" 2>/dev/null || true)"
+  got="${got:-0}"
+  if [ "$got" = "$expected" ]; then
+    printf 'ok    %s\n' "$desc"
+    pass=$((pass + 1))
+  else
+    printf 'FAIL  %s\n      expected %s match(es), got %s\n' "$desc" "$expected" "$got" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+check_term "a term standing alone is caught"            1 "ship it to acorn today"
+check_term "a term is caught whatever its case"         1 "ship it to ACORN today"
+# The reason boundaries were added: without them a short term fires on ordinary
+# prose.  "acorns" is a real word containing the term.
+check_term "a term INSIDE a longer word is not caught"  0 "the acorns fell"
+check_term "a term with a prefix is not caught"         0 "an unacorn thing"
+check_term "another term standing alone is caught"      1 "ask alice about it"
+check_term "that term inside a word is not caught"      0 "the alices gathered"
+# A term whose edges are punctuation keeps matching mid-path.  Wrapping it in
+# \b would demand a word character before the leading slash and break this --
+# failing OPEN, which is why the boundary is conditional.
+check_term "a punctuation-edged term still matches in a path" 1 "lives in /fake/here"
+
+# A term list is a list of NAMES, but it is handed to grep -E as a pattern, so
+# a term must be escaped to a literal.  Unescaped, a dot matched any character
+# and a `+' term did not match its own text at all -- four real terms were
+# inert that way, silently.
+check_term "a dotted term matches its literal text"    1 "at host.example.net now"
+check_term "a dotted term is NOT a wildcard"           0 "at hostXexampleXnet now"
+check_term "a term containing + matches literally"     1 "the a+b case"
+check_term "a term containing + is not expanded"       0 "the aab case"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

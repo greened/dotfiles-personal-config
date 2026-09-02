@@ -241,25 +241,18 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
     terms_file="$(git config --get scrub.termsFile 2>/dev/null || true)"
     [ -n "$terms_file" ] || terms_file="$HOME/.config/git-scrub-terms"
 
-    scrub_re=''
-    if [ -r "$terms_file" ]; then
-      # strip comments and blanks, join with |
-      scrub_re="$(sed -e 's/#.*$//' -e 's/[[:space:]]*$//' "$terms_file" \
-                    | grep -v '^[[:space:]]*$' | paste -sd'|' -)"
-    else
-      echo "scrub: no term list at $terms_file -- literal terms NOT checked." >&2
-      echo "scrub: create it (one term per line) or set scrub.termsFile." >&2
-    fi
-
-    # Shape rules: no employer name in them, so they are safe in a repo-visible
-    # file.  Plain ERE plus an exclusion filter, not a PCRE lookahead, so it is
-    # the same pair each project's check.sh runs (which must survive a CI image
+    # Rules first: both the shape pair and `scrub_term_re' come from
+    # scrub-rules.sh, and the term regex below is built by calling it.
+    #
+    # The shape rules name no employer, so they are safe in a repo-visible file.
+    # Plain ERE plus an exclusion filter, not a PCRE lookahead, so it is the
+    # same pair each project's check.sh runs (which must survive a CI image
     # whose grep may lack PCRE).  Those copies remain, because they run where
     # this file is not available, and they are still kept in step by hand.
     #
     # What this DOES remove is the copy the guard would otherwise hold:
     # scrub-selftest.sh sources the same file, so it asserts against the rules
-    # the hook actually enforces rather than a lookalike.
+    # and the term builder the hook actually uses rather than lookalikes.
     #
     # A missing file fails CLOSED.  The scrub is what stands between a personal
     # repo and employer information, so a broken install must stop the commit,
@@ -272,6 +265,14 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
     fi
     # shellcheck source=scrub-rules.sh
     . "$rules"
+
+    scrub_re=''
+    if [ -r "$terms_file" ]; then
+      scrub_re="$(scrub_term_re "$terms_file")"
+    else
+      echo "scrub: no term list at $terms_file -- literal terms NOT checked." >&2
+      echo "scrub: create it (one term per line) or set scrub.termsFile." >&2
+    fi
 
 
     if [ "$hook" = "pre-commit" ]; then

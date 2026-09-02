@@ -14,6 +14,48 @@
 # repo.  The employer's own strings live in the term list outside any repo
 # (see `scrub.termsFile' / ~/.config/git-scrub-terms).
 
+# scrub_term_re FILE -- build the literal-term ERE from a term list.
+#
+# One term per line, `#' comments and blank lines ignored, joined with `|' and
+# matched case-INSENSITIVELY by the caller: a name is a name however it is
+# capitalised.
+#
+# Each term gets a word boundary, but only on an edge that IS a word character.
+# Without boundaries a short term matches inside ordinary words -- a five-letter
+# term collided with fifteen dictionary words here -- and refusing a commit over
+# innocent prose is how a check teaches people to bypass it.
+#
+# The conditional part is not fussiness.  `\b' asserts a word/non-word
+# transition, so wrapping a term that already begins with punctuation demands a
+# word character BEFORE that punctuation: a `/path/' term would stop matching
+# "in /path/here" altogether.  That fails OPEN, which is worse than the false
+# positives it was meant to fix.  Five of the terms here begin or end with
+# punctuation, and their punctuation already delimits them.
+#
+# `\b' works in GNU grep and in the BSD grep macOS ships (2.6.0-FreeBSD,
+# GNU-compatible), both verified.  `[[:<:]]' is BSD-only, so it is not used.
+# The `sed' caveat elsewhere in these rules does not apply: this is grep.
+#
+# Each term is also ESCAPED to a literal.  The list is a list of names, but it
+# was being handed to `grep -E' as a pattern, so any term containing a regex
+# metacharacter meant something other than itself: a term with a dot matched
+# any character in that position, and one with `+' did not match its own text
+# at all.  Four of the terms here were inert for that reason, silently -- the
+# hook reported nothing and simply never fired on those names.  Escaping is
+# what makes a term list a term list.
+#
+# Boundaries are decided from the RAW term, not the escaped one, because
+# escaping prepends a backslash and would change what the edge looks like.
+scrub_term_re() {
+  sed -e 's/#.*$//' -e 's/[[:space:]]*$//' "$1" \
+    | grep -v '^[[:space:]]*$' \
+    | awk '{ raw = $0; t = raw
+             gsub(/[][(){}.^$*+?|\\]/, "\\\\&", t)
+             if (raw ~ /^[A-Za-z0-9_]/) t = "\\b" t
+             if (raw ~ /[A-Za-z0-9_]$/) t = t "\\b"
+             printf "%s%s", sep, t; sep = "|" }'
+}
+
 # A shape rule is case-SENSITIVE on purpose.  Matched case-insensitively, the
 # Jira-key rule fires on any lowercase hyphen-digits string ("abc-1234"), which
 # is everywhere.  That case sensitivity is also why a lowercase stand-in such as
