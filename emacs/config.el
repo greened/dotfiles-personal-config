@@ -168,100 +168,95 @@
 		   (lambda () (interactive) (mirv-hydra-build/body))))
 
 
-;;; quite: my personal repos, which build with their own tooling rather than
-;;; through git-project.  quite's `shell' build architecture runs a command's
-;;; :shell-command verbatim, so a repo with a hatch env or a ./check.sh is an
-;;; ordinary quite project -- prefix-key bindings and the usual verbs -- rather
-;;; than something the global `quite' backend has to be kept away from.
-;;; `quite-register-repo' then lets gaffer drive the same project headlessly,
-;;; so the interactive and the driven build are one definition.
-;;;
-;;; These projects have a single build flavor, so they declare no :prefixes and
-;;; no :transforms: the lone flavor is named by :target and there are no C-u
-;;; variants.
-
 (with-eval-after-load 'quite
-  ;; git-project builds with hatch.  `hatch build' is deliberately NOT the build
-  ;; verb: it writes dist/ into the worktree, and those artifacts are untracked,
-  ;; so they would surface as noise in every later worktree review.  `hatch env
-  ;; create' is idempotent, leaves nothing behind, and still fails when the
-  ;; environment cannot be built -- which is what a build gate is for.
-  (quite-define-project
-   (list :name "git-project"
-         :build-architecture 'shell
-         :descriptor '(:project-dir "git-project"
-                       :root-list ("/Users/dag/projects")
-                       :key-files ("pyproject.toml"))
-         :prefix-key "j"
-         :target "git-project"
-         :commands '((:name "build" :command "build" :key "b"
-                            :shell-command "hatch env create")
-                     (:name "check" :command "check" :key "k"
-                            :shell-command "hatch run test"))))
-  (quite-register-repo "greened/git-project"
-                       :project "git-project"
-                       :build-target "git-project"
-                       :test-target "git-project")
-
-  ;; gaffer checks itself with its own ./check.sh (byte-compile warnings-fatal,
-  ;; buttercup, then the scrub pass), the same script the Emacs packages use.
-  ;; Registering it here is what lets gaffer build and test its OWN items
-  ;; instead of falling through to the global `quite' backend, which knows
-  ;; nothing about the repo.
-  (quite-define-project
-   (list :name "gaffer"
-         :build-architecture 'shell
-         :descriptor '(:project-dir "gaffer"
-                       :root-list ("/Users/dag/projects")
-                       :key-files ("gaffer.el" "check.sh"))
-         :prefix-key "f"
-         :target "gaffer"
-         :commands '((:name "build" :command "build" :key "b"
-                            :shell-command "./check.sh")
-                     (:name "check" :command "check" :key "k"
-                            :shell-command "./check.sh"))))
-  (quite-register-repo "greened/gaffer"
-                       :project "gaffer"
-                       :build-target "gaffer"
-                       :test-target "gaffer"))
-;;; gaffer: per-repo build + publish for my personal greened Emacs packages.
-;;; The base sets no build backend and the work overlay pins the *global*
-;;; backend to `quite'; these packages build with their own `./check.sh'
-;;; (byte-compile warnings-fatal + buttercup) and, using no PRs, publish by
-;;; fast-forward merge to the default branch.  So give each a per-repo override
-;;; instead of letting the global `quite' leak onto a repo quite never knew.
-;;; `emacs' resolves on the build host's PATH, so the command needs no explicit
-;;; binary.  Add a repo to the list once its change has driven through gaffer
-;;; green.
-
-(with-eval-after-load 'gaffer
-  (dolist (repo '("greened/gazette" "greened/prevue"))
-    (setf (alist-get repo gaffer-repo-build-backends nil nil #'equal)
-          (list :build-backend 'shell :build-command "./check.sh"
-                :test-backend  'shell :test-command  "./check.sh"))
-    (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
-          'ff-merge))
+  ;; Every one of these is a shell project: quite runs the command's
+  ;; :shell-command and nothing else.  They have a single build flavor, so none
+  ;; declares :prefixes or :transforms -- the lone flavor is named by :target
+  ;; and there are no C-u variants.  Two commands each, deliberately: `build'
+  ;; and `check' are the verbs gaffer drives (`quite-run-repo' looks them up by
+  ;; :command), and for a repo whose whole check is one script they are the same
+  ;; script.
+  (dolist (p '(("gaffer"          "f" ("gaffer.el" "check.sh"))
+               ("prevue"          "v" ("prevue.el" "check.sh"))
+               ("gazette"         "z" ("gazette.el" "check.sh"))
+               ("quarry"          "q" ("quarry.el" "check.sh"))
+               ("slack-attention" "a" ("check.sh"))))
+    (let ((name (nth 0 p)) (key (nth 1 p)) (files (nth 2 p)))
+      (quite-define-project
+       (list :name name
+             :build-architecture 'shell
+             :descriptor (list :project-dir name
+                               :root-list '("/Users/dag/projects")
+                               :key-files files)
+             :prefix-key key
+             :target name
+             :commands '((:name "build" :command "build" :key "b"
+                                :shell-command "./check.sh")
+                         (:name "check" :command "check" :key "k"
+                                :shell-command "./check.sh"))))
+      (quite-register-repo (concat "greened/" name)
+                           :project name
+                           :build-target name
+                           :test-target name)))
 
   ;; quite builds with Cask and a Makefile rather than a ./check.sh, and cask
-  ;; lives under ~/.cask on the build host, so it needs its own build and test
-  ;; commands. `make deps' populates the Cask sandbox in a fresh worktree first.
-  (setf (alist-get "greened/quite" gaffer-repo-build-backends nil nil #'equal)
-        (list :build-backend 'shell
-              :build-command "PATH=$HOME/.cask/bin:$PATH make deps compile"
-              :test-backend  'shell
-              :test-command  "PATH=$HOME/.cask/bin:$PATH make test"))
-  (setf (alist-get "greened/quite" gaffer-repo-publish-strategies nil nil #'equal)
-        'ff-merge)
+  ;; lives under ~/.cask on the build host, so it needs its own commands.
+  ;; `make deps' populates the Cask sandbox in a fresh worktree first.
+  (quite-define-project
+   (list :name "quite"
+         :build-architecture 'shell
+         :descriptor '(:project-dir "quite"
+                       :root-list ("/Users/dag/projects")
+                       :key-files ("quite.el" "Cask"))
+         :prefix-key "t"
+         :target "quite"
+         :commands '((:name "build" :command "build" :key "b"
+                            :shell-command "PATH=$HOME/.cask/bin:$PATH make deps compile")
+                     (:name "check" :command "check" :key "k"
+                            :shell-command "PATH=$HOME/.cask/bin:$PATH make test"))))
+  (quite-register-repo "greened/quite"
+                       :project "quite" :build-target "quite" :test-target "quite")
 
-  ;; These build through quite (the block above), so unlike the repos in the
-  ;; ./check.sh list they need no build-backend override -- only a publish
-  ;; strategy.  Without one the default resolution reaches its last clause: no
-  ;; PR number, not listed here, branch is not the default branch, so `open-pr'.
-  ;; That would open a pull request on a repo I never use pull requests for.
-  ;; They land the way all my personal repos do, by fast-forwarding the default
-  ;; branch.
-  (dolist (repo '("greened/git-project" "greened/git-project-core-plugins"
-                  "greened/gaffer"))
+  ;; The Python packages build with hatch.  Building the distribution is
+  ;; deliberately NOT the build verb: it writes dist/ into the worktree, and
+  ;; those artifacts are untracked, so they would surface as noise in every
+  ;; later worktree review.  Creating the environment is idempotent, leaves
+  ;; nothing behind, and still fails when the environment cannot be built --
+  ;; which is what a build gate is for.
+  (dolist (p '(("git-project" "j") ("git-project-core-plugins" "P")))
+    (let ((name (nth 0 p)) (key (nth 1 p)))
+      (quite-define-project
+       (list :name name
+             :build-architecture 'shell
+             :descriptor (list :project-dir name
+                               :root-list '("/Users/dag/projects")
+                               :key-files '("pyproject.toml"))
+             :prefix-key key
+             :target name
+             :commands '((:name "build" :command "build" :key "b"
+                                :shell-command "hatch env create")
+                         (:name "check" :command "check" :key "k"
+                                :shell-command "hatch run test"))))
+      (quite-register-repo (concat "greened/" name)
+                           :project name
+                           :build-target name
+                           :test-target name))))
+
+;;; gaffer: how my personal repos publish.  Every one of them is a quite
+;;; project (the block above), so none needs a `gaffer-repo-build-backends'
+;;; override any more -- gaffer's global `quite' backend, which the work overlay
+;;; pins, now reaches them through quite itself.  One mechanism per repo.
+;;;
+;;; What they DO need is a publish strategy.  Without one the default resolution
+;;; reaches its last clause -- no PR number, not listed here, branch is not the
+;;; default branch -- and picks `open-pr', which would open a pull request on
+;;; repos that have never had one.  They all land the same way: fast-forward the
+;;; default branch.
+
+(with-eval-after-load 'gaffer
+  (dolist (repo '("greened/gaffer" "greened/prevue" "greened/gazette"
+                  "greened/quarry" "greened/slack-attention" "greened/quite"
+                  "greened/git-project" "greened/git-project-core-plugins"))
     (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
           'ff-merge)))
 
