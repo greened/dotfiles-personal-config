@@ -253,10 +253,17 @@
 ;;; repos that have never had one.  They all land the same way: fast-forward the
 ;;; default branch.
 
+;;; The dotfiles repos land the same way, and are listed here for the same
+;;; reason: without an entry the default resolution sees a dev branch that is
+;;; not the default branch and picks `open-pr', which would open a pull request
+;;; on repos that have never had one.  The work overlay adds its own, since
+;;; naming it here would put the employer in a public repo.
 (with-eval-after-load 'gaffer
   (dolist (repo '("greened/gaffer" "greened/prevue" "greened/gazette"
                   "greened/quarry" "greened/slack-attention" "greened/quite"
-                  "greened/git-project" "greened/git-project-core-plugins"))
+                  "greened/git-project" "greened/git-project-core-plugins"
+                  "greened/dotfiles-public" "greened/dotfiles-personal-config"
+                  "greened/dotfiles-personal-secret"))
     (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
           'ff-merge)))
 
