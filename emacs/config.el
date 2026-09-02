@@ -267,6 +267,40 @@
     (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
           'ff-merge)))
 
+;;; Build and test the dotfiles repos with their own scripts rather than the
+;;; fleet-wide backend, which is a build tool that has never heard of them.
+;;;
+;;; Wired because a repo with no build backend can NEVER satisfy the `built'
+;;; gate: gaffer requires the `:build-ok' artifact to be PRESENT, an absent one
+;;; reads as unverified, and leaving the stage then takes a human override every
+;;; single time.  A routine override is how a gate stops meaning anything, and
+;;; there is real work to check here -- byte-compiling the local packages caught
+;;; a live error the tests missed.
+;;;
+;;; The two overlays that genuinely have nothing to build are still stuck, since
+;;; there is no way to declare that; see the per-repo-stage-configuration todo.
+(with-eval-after-load 'gaffer
+  (setf (alist-get "greened/dotfiles-public" gaffer-repo-build-backends
+                   nil nil #'equal)
+        '(:build-backend shell :build-command "./check.sh build"
+          :test-backend  shell :test-command  "./check.sh test"))
+  ;; This repo has no elisp of its own to compile -- its content is the git hook
+  ;; chain -- so only the test half is real work.  The selftest covers the
+  ;; scrub's shape rules and its literal-term builder.
+  ;;
+  ;; The build command is a deliberate stand-in, and states as much when it
+  ;; runs.  An ABSENT `:build-backend' would fall back to the fleet-wide one,
+  ;; which is a build tool that knows nothing about this repo, so the choice is
+  ;; not between this and nothing -- it is between saying "nothing to build" out
+  ;; loud and running something meaningless.  Replace it with a declared
+  ;; no-build once gaffer can express one.
+  (setf (alist-get "greened/dotfiles-personal-config" gaffer-repo-build-backends
+                   nil nil #'equal)
+        '(:build-backend shell
+          :build-command "echo 'nothing to build: hook scripts and config only'"
+          :test-backend  shell
+          :test-command  "git/hooks/scrub-selftest.sh")))
+
 ;;; Calendars for the agenda.  The package is declared in the public base; what
 ;;; belongs here is which calendars to read.
 ;;;
