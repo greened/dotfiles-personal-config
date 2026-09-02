@@ -253,13 +253,15 @@
   (setf (alist-get "greened/quite" gaffer-repo-publish-strategies nil nil #'equal)
         'ff-merge)
 
-  ;; The Python packages build through quite (the block above), so they need no
-  ;; build-backend override -- only a publish strategy.  Without one the default
-  ;; resolution reaches its last clause: no PR number, not listed here, branch is
-  ;; not the default branch, so `open-pr'.  That would open a pull request on a
-  ;; repo I never use pull requests for.  They land the same way the Emacs
-  ;; packages do, by fast-forwarding the default branch.
-  (dolist (repo '("greened/git-project" "greened/git-project-core-plugins"))
+  ;; These build through quite (the block above), so unlike the repos in the
+  ;; ./check.sh list they need no build-backend override -- only a publish
+  ;; strategy.  Without one the default resolution reaches its last clause: no
+  ;; PR number, not listed here, branch is not the default branch, so `open-pr'.
+  ;; That would open a pull request on a repo I never use pull requests for.
+  ;; They land the way all my personal repos do, by fast-forwarding the default
+  ;; branch.
+  (dolist (repo '("greened/git-project" "greened/git-project-core-plugins"
+                  "greened/gaffer"))
     (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
           'ff-merge)))
 
