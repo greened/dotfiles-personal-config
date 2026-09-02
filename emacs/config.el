@@ -260,6 +260,27 @@
     (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
           'ff-merge)))
 
+;;; Calendars for the agenda.  The package is declared in the public base; what
+;;; belongs here is which calendars to read.
+;;;
+;;; The address is a `pass' entry read through a lambda rather than a string,
+;;; per the token-provider pattern the other packages use: a Google secret
+;;; calendar address is a credential -- it grants read access to the whole
+;;; calendar to anyone holding it -- so it must not sit in a repo, public or
+;;; not.  The lambda defers the lookup to fetch time, so a rotated address is
+;;; picked up without restarting Emacs.
+;;;
+;;; The work calendar is not here.  It goes in the work overlay once it has a
+;;; published iCalendar address, and joins this same alist.
+
+(with-eval-after-load 'agenda-feeds
+  (setq agenda-feeds-calendars
+        (list (cons 'personal
+                    (lambda ()
+                      (auth-source-pass-get
+                       'secret
+                       "calendar.google.com/greened.obbligato.org/ics-url"))))))
+
 ;;; Notmuch: LLVM project and C++ standards mailing-list saved searches.
 
 (with-eval-after-load 'notmuch
