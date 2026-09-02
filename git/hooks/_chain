@@ -209,10 +209,11 @@ fi
 #    that AI trailers get stripped and that the author is the personal
 #    identity, and both of those still apply there.
 #
-#    Which repos are exempt lives outside any repo (default
-#    ~/.config/git-scrub-exempt, override with `git config scrub.exemptFile'),
-#    for the same reason the term list does: saying "this repo is the
-#    employer-shaped one" names the employer.  One shell glob per line, matched
+#    Which repos are exempt is read from ~/.config/git-scrub-exempt (override
+#    with `git config scrub.exemptFile'), deployed there from the same PRIVATE
+#    overlay that carries the term list and for the same reason: saying "this
+#    repo is the employer-shaped one" names the employer, so it can live in a
+#    private repo but never in a public one.  One shell glob per line, matched
 #    against remote.origin.url.  A missing file means no exemptions, which is
 #    the safe direction.  An exemption announces itself on every commit, so it
 #    cannot become something you forgot was switched on.
@@ -270,8 +271,22 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
     if [ -r "$terms_file" ]; then
       scrub_re="$(scrub_term_re "$terms_file")"
     else
-      echo "scrub: no term list at $terms_file -- literal terms NOT checked." >&2
-      echo "scrub: create it (one term per line) or set scrub.termsFile." >&2
+      # LOUD, not a passing note.  A missing term list means only the shape
+      # rules run: names are not checked at all.  That is a fail-OPEN, and it
+      # went unnoticed on one machine for exactly this reason -- the old
+      # two-line warning scrolled past in ordinary commit output while the
+      # commit succeeded and the scrub looked like it had done its job.
+      #
+      # Still not fatal: the shape rules are real protection, and refusing every
+      # commit on a machine that has not been set up yet would be its own kind
+      # of broken.  It must be impossible to MISS, not impossible to proceed.
+      echo "!! ==================================================" >&2
+      echo "!! scrub: NO TERM LIST -- employer NAMES ARE UNCHECKED" >&2
+      echo "!!   expected: $terms_file" >&2
+      echo "!!   only the shape rules ran (keys, handles, paths)." >&2
+      echo "!!   clone the private overlay that provides it, or set" >&2
+      echo "!!   scrub.termsFile.  Until then this check is partial." >&2
+      echo "!! ==================================================" >&2
     fi
 
 

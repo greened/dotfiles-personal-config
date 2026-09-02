@@ -83,6 +83,7 @@ alice
 /fake/
 host.example.net
 a+b
+\bbadger\b
 TERMS
 term_re="$(scrub_term_re "$terms")"
 
@@ -121,6 +122,15 @@ check_term "a dotted term matches its literal text"    1 "at host.example.net no
 check_term "a dotted term is NOT a wildcard"           0 "at hostXexampleXnet now"
 check_term "a term containing + matches literally"     1 "the a+b case"
 check_term "a term containing + is not expanded"       0 "the aab case"
+
+# Escaping to a literal broke the terms written back when the list WAS a
+# pattern and spelled its own boundaries: `\b' became a demand for a literal
+# backslash, so the term matched only its own spelling in the list file.  Five
+# real terms were dead this way, and the audit called them healthy for the same
+# reason.  Anchors the term carries itself are therefore stripped first.
+check_term "a legacy \\b-anchored term catches the bare word" 1 "a badger here"
+check_term "its stripped anchor still bounds the term"        0 "the badgers ran"
+check_term "it no longer matches its own written spelling"    0 'x \bbadger\b y'
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

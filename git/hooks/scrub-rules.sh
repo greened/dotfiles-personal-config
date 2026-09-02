@@ -11,8 +11,9 @@
 # access to this file, and that pair is still kept in step by hand.
 #
 # The rules name shapes, never the employer, so this file is safe in a public
-# repo.  The employer's own strings live in the term list outside any repo
-# (see `scrub.termsFile' / ~/.config/git-scrub-terms).
+# repo.  The employer's own strings live in the term list, which is deployed to
+# ~/.config from a PRIVATE overlay (see `scrub.termsFile' /
+# ~/.config/git-scrub-terms) and must never move to a public one.
 
 # scrub_term_re FILE -- build the literal-term ERE from a term list.
 #
@@ -46,10 +47,22 @@
 #
 # Boundaries are decided from the RAW term, not the escaped one, because
 # escaping prepends a backslash and would change what the edge looks like.
+#
+# A leading/trailing `\b' the term carries ITSELF is stripped first.  Those were
+# written when terms were patterns and the boundary had to be spelled out, and
+# escaping turns one into a demand for a literal backslash in the text: a term
+# written `\bacorn\b' stopped matching the word "acorn" and matched only its own
+# spelling.  Five of the terms here were in that state.  Stripping is not
+# cosmetic tidying of a list that could simply be edited: an out-of-date copy of
+# the list on another machine would otherwise fail OPEN, and because such a term
+# still matches the line it sits on in the list itself, it goes on looking like a
+# term that works.
 scrub_term_re() {
   sed -e 's/#.*$//' -e 's/[[:space:]]*$//' "$1" \
     | grep -v '^[[:space:]]*$' \
-    | awk '{ raw = $0; t = raw
+    | awk '{ raw = $0
+             sub(/^\\b/, "", raw); sub(/\\b$/, "", raw)
+             t = raw
              gsub(/[][(){}.^$*+?|\\]/, "\\\\&", t)
              if (raw ~ /^[A-Za-z0-9_]/) t = "\\b" t
              if (raw ~ /[A-Za-z0-9_]$/) t = t "\\b"
