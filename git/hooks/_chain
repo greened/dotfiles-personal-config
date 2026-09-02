@@ -201,8 +201,43 @@ fi
 #    not by name.  So: add every term you ever find to the file, and keep
 #    running a deliberate sweep before anything is published.  What this hook
 #    buys is that no leak you have already found can happen twice.
+#
+#    A personal repo can be EXEMPT from the scrub without leaving the personal
+#    realm.  One case exists: the overlay holding an employer's own
+#    configuration, where those terms are the point of the repo rather than a
+#    leak.  Exempting it must not flip the realm, because realm also decides
+#    that AI trailers get stripped and that the author is the personal
+#    identity, and both of those still apply there.
+#
+#    Which repos are exempt lives outside any repo (default
+#    ~/.config/git-scrub-exempt, override with `git config scrub.exemptFile'),
+#    for the same reason the term list does: saying "this repo is the
+#    employer-shaped one" names the employer.  One shell glob per line, matched
+#    against remote.origin.url.  A missing file means no exemptions, which is
+#    the safe direction.  An exemption announces itself on every commit, so it
+#    cannot become something you forgot was switched on.
+hook_scrub_exempt() {
+  local f origin line
+  f="$(git config --get scrub.exemptFile 2>/dev/null || true)"
+  [ -n "$f" ] || f="$HOME/.config/git-scrub-exempt"
+  [ -r "$f" ] || { printf '0'; return 0; }
+  origin="$(git config --get remote.origin.url 2>/dev/null || true)"
+  [ -n "$origin" ] || { printf '0'; return 0; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="$(printf '%s' "$line" | tr -d '[:space:]')"
+    [ -n "$line" ] || continue
+    # shellcheck disable=SC2254
+    case "$origin" in $line) printf '1'; return 0 ;; esac
+  done < "$f"
+  printf '0'
+}
+
 if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
-  if [ "$(hook_realm)" = personal ]; then
+  if [ "$(hook_realm)" = personal ] && [ "$(hook_scrub_exempt)" = 1 ]; then
+    echo "scrub: this repo is exempt -- employer terms are its purpose." >&2
+    echo "scrub: trailer-stripping and the personal identity still apply." >&2
+  elif [ "$(hook_realm)" = personal ]; then
     terms_file="$(git config --get scrub.termsFile 2>/dev/null || true)"
     [ -n "$terms_file" ] || terms_file="$HOME/.config/git-scrub-terms"
 
