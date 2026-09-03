@@ -66,10 +66,19 @@ hook_realm() {
         email)  case "$email"  in $glob) realm=work ;; esac ;;
       esac
     done < "$f"
-  else
-    echo "realm: no work-signal file at $f -- employer origins NOT recognised," >&2
-    echo "realm: so every repo is treated as personal.  See git config realm.workFile." >&2
   fi
+  # No work-signal file means, in the ordinary case, a machine with no work
+  # context at all -- a personal laptop with only the personal overlays cloned.
+  # Nothing is missing there, so nothing is said: every repo reading as personal
+  # is the correct posture, and a notice on every commit would be pure noise.
+  # It used to warn here, which on such a machine fires forever and teaches you
+  # to scroll past the one place this hook ever speaks.
+  #
+  # The awkward case is a WORK machine that has lost the file: its work repos
+  # then read as personal, so the scrub runs on them and fails closed rather
+  # than leaking.  Loud but wrong-headed at commit time; that belongs to the
+  # work overlay's link.sh, which checks its own deployment (see the term-list
+  # check there).
   case "$top/"   in "$HOME"/ws/*) realm=work ;; esac
   case "$top/"   in "$HOME"/src/*|"$HOME"/projects/*|"$HOME"/lib/*) realm=personal ;; esac
   # A repo owned by the work GitHub ACCOUNT is work-realm even when the local
@@ -183,10 +192,10 @@ fi
 #    Two halves, because they fail differently.
 #
 #    LITERAL terms -- the company name, internal repo and subsystem names,
-#    colleague logins -- come from a file OUTSIDE any repo (default
-#    ~/.config/git-scrub-terms, override with `git config scrub.termsFile').
-#    They cannot be committed anywhere: a list of "these are my employer's
-#    internal names" living in a personal repo IS the leak it protects against.
+#    colleague logins -- are read from ~/.config/git-scrub-terms (override with
+#    `git config scrub.termsFile'), deployed there from a PRIVATE overlay.  They
+#    cannot live in a public repo: a list of "these are my employer's internal
+#    names" published in a personal repo IS the leak it protects against.
 #    One term per line, blank lines and # comments ignored, matched
 #    case-insensitively as extended regexps.
 #
@@ -267,26 +276,44 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
     # shellcheck source=scrub-rules.sh
     . "$rules"
 
+    # A missing term list means different things on different machines, and the
+    # signal that tells them apart is whether this machine has work context at
+    # all -- the realm file, which ships in the same private overlay as the term
+    # list and is therefore present or absent WITH it.
+    #
+    #   no work context   A personal machine: no work overlay, no work
+    #                     material, nothing expected.  The shape rules still
+    #                     run, and they need no employer names.  Silent, and
+    #                     the commit proceeds -- being told on every commit
+    #                     about a list you have no reason to own is how a
+    #                     warning becomes invisible.
+    #   work context      The overlay is here but its list is not: a broken
+    #                     install, which is the state one machine sat in
+    #                     unnoticed for weeks while the scrub reported success
+    #                     having checked no names.  REFUSE.
+    #
+    # The escape is per-checkout, so switching it on is a deliberate act
+    # recorded in that repo rather than a global flag, and it announces itself
+    # on every commit for the same reason the exempt list does.
     scrub_re=''
     if [ -r "$terms_file" ]; then
       scrub_re="$(scrub_term_re "$terms_file")"
+    elif [ ! -r "$(hook_realm_file)" ]; then
+      : # no work context; shape rules only, and nothing to say about it
+    elif [ "$(git config --get --type=bool scrub.allowNoTerms 2>/dev/null)" = true ]; then
+      echo "scrub: no term list, allowed by scrub.allowNoTerms in this repo." >&2
+      echo "scrub: employer NAMES are unchecked here; shape rules still run." >&2
     else
-      # LOUD, not a passing note.  A missing term list means only the shape
-      # rules run: names are not checked at all.  That is a fail-OPEN, and it
-      # went unnoticed on one machine for exactly this reason -- the old
-      # two-line warning scrolled past in ordinary commit output while the
-      # commit succeeded and the scrub looked like it had done its job.
-      #
-      # Still not fatal: the shape rules are real protection, and refusing every
-      # commit on a machine that has not been set up yet would be its own kind
-      # of broken.  It must be impossible to MISS, not impossible to proceed.
       echo "!! ==================================================" >&2
-      echo "!! scrub: NO TERM LIST -- employer NAMES ARE UNCHECKED" >&2
+      echo "!! scrub: NO TERM LIST -- refusing to commit" >&2
       echo "!!   expected: $terms_file" >&2
-      echo "!!   only the shape rules ran (keys, handles, paths)." >&2
-      echo "!!   clone the private overlay that provides it, or set" >&2
-      echo "!!   scrub.termsFile.  Until then this check is partial." >&2
+      echo "!!   This machine HAS work context (the realm file is here), so" >&2
+      echo "!!   the list should be too -- its overlay deploys both.  With it" >&2
+      echo "!!   missing, employer names are not checked at all." >&2
+      echo "!!   Fix the overlay's install, or, to proceed anyway:" >&2
+      echo "!!     git config scrub.allowNoTerms true" >&2
       echo "!! ==================================================" >&2
+      exit 1
     fi
 
 
