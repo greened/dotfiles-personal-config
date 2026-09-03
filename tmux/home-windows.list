@@ -1,0 +1,31 @@
+# Home context: one window per project I work at home.
+#
+# Format: <window-name> <directory>.  `~' is expanded.  A directory that does not
+# exist on this machine falls back to $HOME.
+#
+# Read by tmux/pick-layout.sh in the work overlay, which runs from the
+# `after-new-session' hook: a session named `home' gets this list, and so does any
+# machine not on that script's work-host allowlist.  `tmux new -s work' forces the
+# work list instead.  Read as DATA, not sourced by tmux -- hence `.list' and not
+# `.conf', which tmux.conf's overlay glob would pick up.
+#
+# mirv, dartt and freebook are not cloned on either work machine, so those three
+# fall back to $HOME there until they are.  The watcher dirs are VM-only, so they
+# fall back too.
+#
+# The six shared with the work list -- quite, prevue-gaffer, gazette, dotfiles,
+# watch-queue, skills-sync -- keep the same names AND the same directories in both
+# contexts deliberately, so a window name means the same project and lands in the
+# same tree whichever list built it.
+#
+# prevue-gaffer is one window because the pair is worked together, which is also
+# why memory-personal/SLUGS.map gives either project's slug both memories.
+mirv            ~/projects/mirv
+dartt           ~/projects/dartt
+freebook        ~/projects/freebook
+quite           ~/projects/quite
+prevue-gaffer   ~/projects/prevue
+gazette         ~/projects/gazette
+dotfiles        ~/lib/dotfiles
+watch-queue     ~/lib/claude-watchers/watch-queue
+skills-sync     ~/lib/claude-watchers/skills-sync
