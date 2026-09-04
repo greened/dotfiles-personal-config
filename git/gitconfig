@@ -1,9 +1,22 @@
 # Personal git entry point (symlinked to ~/.gitconfig by this overlay's link.sh).
 # Layer the generic base first, then this machine's overlay includes (identity
 # and any company settings), which link.sh materializes into ~/.gitconfig.local.
+#
+# ~/.gitconfig.machine is for settings true of ONE MACHINE and no other, so they
+# do not belong in a tracked file. It comes last, so it wins.
+#
+# It is NOT ~/.gitconfig.local: link.sh truncates that file and regenerates it
+# from the overlay list on every run, so a hand edit there is lost. This one is
+# untracked, ungenerated, and git ignores the include entirely when the file is
+# absent -- so nothing has to exist on a machine that needs nothing.
+#
+# First use: the Mac needs `credential.helper = pass-git-helper` with the
+# homebrew bin on PATH. That path exists on no other machine, and a hardcoded
+# /opt/homebrew in the tracked config is exactly what this layer prevents.
 [include]
 	path = ~/lib/dotfiles/git/gitconfig
 	path = ~/.gitconfig.local
+	path = ~/.gitconfig.machine
 [core]
 	# Global hook dispatcher: chains to any repo-local hook, and strips AI
 	# co-author trailers on non-work (personal) repos. See git/hooks/_chain.
