@@ -95,13 +95,86 @@ hook_realm() {
 }
 
 # 1) Chain to the repo-local hook of the same name, if present and not ourselves.
-gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
-if [ -n "$gitdir" ]; then
+#
+# TWO git dirs, not one.  Inside a linked worktree `--absolute-git-dir` returns
+# <main>/.git/worktrees/<name>, which has no hooks/ of its own, so checking only
+# that path silently skipped every repo-local hook in a worktree -- the place
+# most of the work happens.  Measured 2026-09-04 in a scratch repo: an ordinary
+# branch switch DID run the repo-local post-checkout, and `git worktree add` did
+# NOT.  `--git-common-dir` is the main .git, where hooks/ actually lives.
+self="$(cd "$(dirname "$0")" && pwd)/$hook"
+ran_local=""
+for gitdir in \
+  "$(git rev-parse --absolute-git-dir 2>/dev/null || true)" \
+  "$(git rev-parse --git-common-dir 2>/dev/null || true)"
+do
+  [ -n "$gitdir" ] || continue
+  # --git-common-dir can come back RELATIVE (a bare ".git"), so absolutize it
+  # before comparing, or the dedup misses and a repo-local hook runs twice.
+  gitdir="$(cd "$gitdir" 2>/dev/null && pwd || true)"
+  [ -n "$gitdir" ] || continue
   local_hook="$gitdir/hooks/$hook"
-  self="$(cd "$(dirname "$0")" && pwd)/$hook"
-  if [ -x "$local_hook" ] && [ "$local_hook" != "$self" ]; then
-    "$local_hook" "$@" || exit $?
-  fi
+  [ -x "$local_hook" ] || continue
+  [ "$local_hook" != "$self" ] || continue
+  [ "$local_hook" != "$ran_local" ] || continue
+  ran_local="$local_hook"
+  "$local_hook" "$@" || exit $?
+done
+
+# 1b) post-checkout: remind that a NEW WORKTREE still has to be wired into the
+#     memory system.  `git be wt add` cannot be covered here -- it goes through
+#     git-project, whose add_worktree calls pygit2, and libgit2 runs no hooks
+#     (measured 2026-09-04: the git CLI fired this hook, pygit2 did not).  So the
+#     skill covers that path and this covers plain `git worktree add`.
+#
+#     PRINT ONLY, always exit 0.  A failing post-checkout would break
+#     `git worktree add` itself, and a reminder is not worth that.
+#
+#     The guard is two facts and no path assumptions:
+#       - $1 is the null SHA  -> a fresh checkout, not a branch switch
+#       - the two git dirs differ -> this is a LINKED WORKTREE, not a main clone
+#     Together they fire exactly once, when a worktree is created.
+if [ "$hook" = "post-checkout" ]; then
+  old="${1:-}"
+  wire="$HOME/.claude/skills-personal/bin/wt-wire.sh"
+  case "$old" in
+    0000000000000000000000000000000000000000)
+      adg="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
+      cdg="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+      cdg="$(cd "$cdg" 2>/dev/null && pwd || true)"
+      if [ -n "$adg" ] && [ -n "$cdg" ] && [ "$adg" != "$cdg" ] && [ -x "$wire" ]; then
+        name="$(basename "$PWD")"
+        owner="$(basename "$(dirname "$PWD")")"
+        # DO the decision-free half, remind about the rest.
+        #
+        # `--slugs-only` creates the slug directory and nothing else. It is
+        # instant, needs no answer from anyone, and writes to no other git repo.
+        # That is the omission that costs the FIRST session all of its memory,
+        # and the next sync-skills-personal tick runs bootstrap and wires it.
+        #
+        # The other two steps deliberately stay out of here. Full wiring runs
+        # bootstrap, which takes 66 seconds (measured) -- unacceptable to block
+        # `git worktree add` on. And declaring the unit can need a question when
+        # the name looks like an existing stack; a hook has nowhere to ask, so it
+        # would either guess (the silent split this whole design prevents) or
+        # fail, and a failing post-checkout breaks `git worktree add` itself.
+        #
+        # Hence `|| true`: a wiring problem must never break the checkout.
+        #
+        # Only claim a slug when one really happened. A worktree outside the ws
+        # root gets none, and saying otherwise is the kind of plausible-but-wrong
+        # output that hides the real state.
+        wired="$("$wire" --slugs-only "$owner/$name" 2>/dev/null || true)"
+        case "$wired" in
+          *"slug:"*)
+            echo "post-checkout: worktree '$name' has no declared UNIT yet." >&2
+            echo "  Its slug is in place, so the next sync tick gives it project memory." >&2
+            echo "  To put it in a unit (idempotent):  $wire $owner/$name" >&2
+            ;;
+        esac
+      fi
+      ;;
+  esac
 fi
 
 # 2) commit-msg policy: strip AI trailers unless this is a work repo.
