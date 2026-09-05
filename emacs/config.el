@@ -217,14 +217,33 @@
   (quite-register-repo "greened/quite"
                        :project "quite" :build-target "quite" :test-target "quite")
 
-  ;; The Python packages build with hatch.  Building the distribution is
-  ;; deliberately NOT the build verb: it writes dist/ into the worktree, and
-  ;; those artifacts are untracked, so they would surface as noise in every
-  ;; later worktree review.  Creating the environment is idempotent, leaves
-  ;; nothing behind, and still fails when the environment cannot be built --
+  ;; The Python packages build with uv, which both machines have.  Building the
+  ;; distribution is deliberately NOT the build verb: it writes dist/ into the
+  ;; worktree, and those artifacts are untracked, so they would surface as
+  ;; noise in every later worktree review.  Creating the environment is
+  ;; idempotent, leaves nothing a review sees (uv writes a .venv/.gitignore
+  ;; holding "*"), and still fails when the environment cannot be built --
   ;; which is what a build gate is for.
-  (dolist (p '(("git-project" "j") ("git-project-core-plugins" "P")))
-    (let ((name (nth 0 p)) (key (nth 1 p)))
+  ;;
+  ;; The two packages are developed together, and core-plugins pins a
+  ;; git-project that is not released yet, so each environment installs the
+  ;; sibling from a local checkout instead of from the index.  Otherwise which
+  ;; sibling gets tested depends on what the index happens to hold.  $s finds
+  ;; that checkout under either layout: a worktree sits beside the repo on the
+  ;; build VM and one directory deeper on the laptop, so probe the flat layout
+  ;; first and fall back to the nested one.  The sibling installs first and
+  ;; brings the third-party dependencies, then the project itself installs with
+  ;; --no-deps, which is what lets core-plugins build against a git-project
+  ;; that the index does not carry yet.
+  ;;
+  ;; The check ignores the user's git configuration.  One core-plugins test
+  ;; pushes to a fixture remote and would otherwise fire the pre-push hook.
+  (dolist (p '(("git-project" "j" "git-project-core-plugins")
+               ("git-project-core-plugins" "P" "git-project")))
+    (let* ((name (nth 0 p)) (key (nth 1 p)) (sibling (nth 2 p))
+           (find-sibling
+            (format "s=../%s; [ -f \"$s/pyproject.toml\" ] || s=../../%s/master;"
+                    sibling sibling)))
       (quite-define-project
        (list :name name
              :build-architecture 'shell
@@ -233,10 +252,20 @@
                                :key-files '("pyproject.toml"))
              :prefix-key key
              :target name
-             :commands '((:name "build" :command "build" :key "b"
-                                :shell-command "hatch env create")
-                         (:name "check" :command "check" :key "k"
-                                :shell-command "hatch run test"))))
+             :commands
+             (list (list :name "build" :command "build" :key "b"
+                         :shell-command
+                         (concat find-sibling
+                                 " uv venv --python 3.11 --allow-existing .venv"
+                                 " && uv pip install --python .venv/bin/python"
+                                 " -q -e \"$s\" pytest pytest-console-scripts"
+                                 " && uv pip install --python .venv/bin/python"
+                                 " -q --no-deps -e ."))
+                   (list :name "check" :command "check" :key "k"
+                         :shell-command
+                         (concat "GIT_CONFIG_GLOBAL=/dev/null"
+                                 " GIT_CONFIG_NOSYSTEM=1"
+                                 " .venv/bin/python -m pytest tests -q")))))
       (quite-register-repo (concat "greened/" name)
                            :project name
                            :build-target name
