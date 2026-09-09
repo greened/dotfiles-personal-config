@@ -215,6 +215,130 @@ if [ "$hook" = "pre-commit" ]; then
   fi
 fi
 
+# 3b) pre-commit policy: FORMAT the staged lines rather than checking them.
+#
+#     A check-only gate turns a zero-effort fix into a failed commit plus a
+#     manual format plus a retry: three interactions to avoid one automatic
+#     edit.  So this formats, and it always succeeds.  It may or may not change
+#     the code.
+#
+#     Not at build time.  A build should observe the source, not mutate it:
+#     reformatting there breaks the property that a build result describes the
+#     tree you have, leaves a dirty worktree behind, and can write back over NFS
+#     from a compute node.
+#
+#     It runs BEFORE the two scans below, deliberately.  Both refuse a commit
+#     based on staged content, so they should judge the bytes that will actually
+#     land, not the bytes as typed.
+#
+#     STAGED LINES ONLY, through git-clang-format, never `clang-format -i' on
+#     whole files.  Three reasons: whole-file formatting drags in pre-existing
+#     violations that must stay untouched, it reflows code nobody wrote, and it
+#     forces a directory allowlist that goes stale (the allowlist this replaces
+#     had missed a whole subtree).  Line-scoped formatting can run repo-wide
+#     with no churn, so there is nothing to keep in step.
+#
+#     NOTHING here names a project, or a path inside one: this repo is
+#     published, and the scrub below would refuse the commit anyway.  The pinned
+#     binary is named by per-clone config, or by TOOLCHAIN when the environment
+#     already carries it.  Neither present means silence, which is right on a
+#     machine that has no such toolchain -- but a config that names a MISSING
+#     binary is loud, because that is a broken install and not an absent one.
+#
+#     Pinning matters: clang-format versions disagree, and an unpinned one from
+#     PATH reflows whole files.  Never resolve it from PATH.
+if [ "$hook" = "pre-commit" ]; then
+  fmt_bin="$(git config --get format.clangFormatBin 2>/dev/null || true)"
+  fmt_named="$fmt_bin"
+  if [ -z "$fmt_bin" ] && [ -n "${TOOLCHAIN:-}" ]; then
+    fmt_bin="$TOOLCHAIN/sdk-x86_64/usr/bin/clang-format"
+  fi
+  # git-clang-format ships in the LLVM tree, so its presence is also the test
+  # for "is this the kind of clone this policy is about".  No tree, no policy.
+  #
+  # The tool itself is NOT what does the work, and that is a measured decision.
+  # `git clang-format --staged' picks the changed lines from the index but
+  # formats and patches the WORKING TREE, so on a partially staged file its
+  # hunk carries the unstaged lines as context and will not apply to the index
+  # at all (measured 2026-09-09: the staged line went in unformatted).  What
+  # follows formats the staged BLOB and writes that back, which is the thing
+  # the commit is actually made from.
+  fmt_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  fmt_gcf=""
+  [ -n "$fmt_top" ] && fmt_gcf="$fmt_top/clang/tools/clang-format/git-clang-format"
+
+  if [ -n "$fmt_named" ] && [ ! -x "$fmt_named" ]; then
+    echo "format: format.clangFormatBin names $fmt_named, which is not executable." >&2
+    echo "format: staged lines were NOT formatted.  Fix the path or unset it." >&2
+  elif [ -n "$fmt_bin" ] && [ -x "$fmt_bin" ] && [ -n "$fmt_gcf" ] && [ -r "$fmt_gcf" ]; then
+    # An initial commit has no HEAD to diff against, so fall back to the empty
+    # tree rather than skipping: a first commit deserves the same treatment.
+    fmt_base=HEAD
+    git rev-parse --verify -q HEAD >/dev/null 2>&1 || \
+      fmt_base="$(git hash-object -t tree /dev/null)"
+    fmt_touched=0
+    fmt_split=0
+
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      case "$f" in
+        *.c|*.cc|*.cpp|*.cxx|*.h|*.hh|*.hpp|*.hxx) ;;
+        # Extension-based, so a C++ header that carries no filename extension
+        # at all is not covered.  Stated rather than left to be discovered:
+        # letting clang-format decide instead would hand it every staged file
+        # in the repo.
+        *) continue ;;
+      esac
+      # Regular files only.  A symlink's blob is its target text, and
+      # reformatting that would corrupt the link.
+      fmt_mode="$(git ls-files --stage -- "$f" | awk '{print $1; exit}')"
+      case "$fmt_mode" in 100644|100755) ;; *) continue ;; esac
+
+      # The changed line ranges IN THE STAGED CONTENT, from the +side of each
+      # hunk header.  A pure deletion (+a,0) has no lines to format.
+      fmt_lines="$(git diff --cached -U0 --diff-filter=ACM "$fmt_base" -- "$f" 2>/dev/null \
+                     | sed -n 's/^@@ -[0-9,]* +\([0-9]*\),\{0,1\}\([0-9]*\) @@.*/\1 \2/p')"
+      [ -n "$fmt_lines" ] || continue
+      fmt_args=()
+      while read -r start count; do
+        [ -n "$start" ] || continue
+        [ -n "$count" ] || count=1
+        [ "$count" -gt 0 ] 2>/dev/null || continue
+        fmt_args+=("--lines=$start:$((start + count - 1))")
+      done <<< "$fmt_lines"
+      [ "${#fmt_args[@]}" -gt 0 ] || continue
+
+      fmt_was="$(mktemp)"; fmt_now="$(mktemp)"
+      if git show ":$f" > "$fmt_was" 2>/dev/null &&
+         "$fmt_bin" --assume-filename="$f" "${fmt_args[@]}" < "$fmt_was" > "$fmt_now" 2>/dev/null &&
+         [ -s "$fmt_now" ] && ! cmp -s "$fmt_was" "$fmt_now"
+      then
+        fmt_sha="$(git hash-object -w --path="$f" "$fmt_now" 2>/dev/null || true)"
+        if [ -n "$fmt_sha" ] && git update-index --cacheinfo "$fmt_mode,$fmt_sha,$f" 2>/dev/null; then
+          fmt_touched=$((fmt_touched + 1))
+          # Update the file on disk ONLY when it still matches what was staged.
+          # If it does not, the difference is unstaged work, and overwriting it
+          # is the data loss this whole approach exists to avoid.
+          if cmp -s "$fmt_was" "$f" 2>/dev/null; then
+            cat "$fmt_now" > "$f"
+          else
+            fmt_split=$((fmt_split + 1))
+          fi
+        fi
+      fi
+      rm -f "$fmt_was" "$fmt_now"
+    done < <(git diff --cached --name-only --diff-filter=ACM "$fmt_base" 2>/dev/null)
+
+    if [ "$fmt_touched" -gt 0 ]; then
+      echo "format: reformatted staged lines in $fmt_touched file(s)." >&2
+      if [ "$fmt_split" -gt 0 ]; then
+        echo "format: $fmt_split of them also had UNSTAGED edits, so only the" >&2
+        echo "format: commit was formatted -- the file on disk was left alone." >&2
+      fi
+    fi
+  fi
+fi
+
 # 4) pre-commit policy: refuse to commit a staged line that looks like a live
 #    credential.
 #
