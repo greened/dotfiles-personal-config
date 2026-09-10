@@ -130,6 +130,7 @@
 
 ;;; quite: MIRV build hydra.
 
+
 (with-eval-after-load 'quite
   (setq git-mirv-name "mirv")
 
@@ -166,7 +167,6 @@
 
   (define-key quite-command-map (kbd "Mh")
 		   (lambda () (interactive) (mirv-hydra-build/body))))
-
 
 (with-eval-after-load 'quite
   ;; Every one of these is a shell project: quite runs the command's
@@ -295,6 +295,196 @@
                   "greened/dotfiles-personal-secret"))
     (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
           'ff-merge)))
+
+;;; gaffer: how git-project and core-plugins RELEASE.  Landing is not shipping
+;;; for these two.  They are python packages on PyPI, so `done' has to mean
+;;; RELEASED rather than merged, and listing them in
+;;; `gaffer-repo-release-strategies' is what says so.  Every other repo above
+;;; has no entry, rolls through `to-release' untouched, and keeps `done' meaning
+;;; MERGED.
+;;;
+;;; The handler tags, builds and uploads as ONE act, which is deliberate rather
+;;; than a shortcut.  `gaffer--released-p' answers "has this shipped?" by
+;;; running `git tag --contains', and that is what lets one release clear every
+;;; other item parked at `to-release'.  A tag standing on its own would
+;;; therefore make gaffer believe work shipped when it had not.  Hence two
+;;; safeguards: the local tag is deleted if any later step fails, and the tag is
+;;; pushed LAST, only after a successful upload.
+;;;
+;;; It runs on this machine.  The token lives in `pass', which is not installed
+;;; on the build VM and is not going to be, so a release is laptop-only however
+;;; the artifact gets built.
+
+(defun dag/release--git (&rest args)
+  "Run git with ARGS in `default-directory'.
+Return a cons of the exit status and the trimmed output."
+  (with-temp-buffer
+    (cons (apply #'call-process "git" nil t nil args)
+          (string-trim (buffer-string)))))
+
+(defun dag/release--git! (&rest args)
+  "Run git with ARGS, signalling on a non-zero exit.  Return trimmed output."
+  (let ((result (apply #'dag/release--git args)))
+    (unless (zerop (car result))
+      (error "git %s: %s" (string-join args " ") (cdr result)))
+    (cdr result)))
+
+(defun dag/release--bump (tag)
+  "Increment TAG's final numeric component, so \"v0.0.37\" gives \"v0.0.38\".
+Return TAG unchanged when it does not end in a number."
+  (if (string-match "\\`\\(.*[^0-9]\\)\\([0-9]+\\)\\'" tag)
+      (concat (match-string 1 tag)
+              (number-to-string (1+ (string-to-number (match-string 2 tag)))))
+    tag))
+
+(defun dag/release--run (buffer program &rest args)
+  "Run PROGRAM with ARGS, logging into BUFFER, and return its exit status.
+Wait with `accept-process-output' rather than using `call-process', so that
+redisplay, C-g and gpg-agent's pinentry keep working while a build or an upload
+runs.  A synchronous call freezes Emacs for the whole release, and against a
+cold gpg-agent it can wedge it outright.
+
+Two details are load-bearing.  Give the child a PIPE rather than a pty, so gpg
+cannot decide to prompt on a terminal nothing is reading.  And drain after the
+process dies, because `process-live-p' goes nil as soon as the exit is
+recorded, which says nothing about whether the output has been read out of the
+pipe yet.  `call-process' guaranteed that; a liveness loop alone does not."
+  (let* ((process-connection-type nil)
+         (proc (apply #'start-file-process
+                      (format "dag-release-%s" program) buffer program args)))
+    ;; Never prompt about killing it: this runs inside an `unwind-protect', and
+    ;; a query there can strand the buffer it is trying to clean up.
+    (set-process-query-on-exit-flag proc nil)
+    (unwind-protect
+        (progn
+          (while (process-live-p proc)
+            (accept-process-output proc 0.2))
+          (while (accept-process-output proc 0.2))
+          (process-exit-status proc))
+      (when (process-live-p proc)
+        (kill-process proc)))))
+
+(defun dag/release--pass (entry)
+  "Return the first line of pass ENTRY, leaving it in no live buffer.
+Read through `dag/release--run', so a pinentry prompt cannot freeze Emacs, and
+kill the buffer afterwards rather than let a token sit in one.  The kill is
+unconditional: `kill-buffer-query-functions' is bound away so a surviving
+process cannot turn the cleanup into a question and strand the token."
+  (let ((buffer (generate-new-buffer " *dag-release-pass*")))
+    (unwind-protect
+        (progn
+          (unless (zerop (dag/release--run buffer "pass" "show" entry))
+            (error "gaffer release: pass show %s failed" entry))
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            (buffer-substring-no-properties (point) (line-end-position))))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer buffer)))))
+
+(defun dag/gaffer-release-pypi (item strategy)
+  "Cut ITEM's PyPI release and return the tag, for `gaffer-release-function'.
+
+Tag ITEM's own commit, which is the release CUT POINT.  Everything up to and
+including it ships and its items clear to `done'.  Anything that landed after
+it stays parked at `to-release' for a later cut.  That falls out of
+`gaffer--released-p' testing CONTAINMENT, so cutting at an item is how you
+choose where a release stops.
+
+Build in a throwaway worktree at the tag rather than in the clone.  hatch-vcs
+takes the version from the tag reachable at zero distance from the BUILD TREE,
+so building the clone's HEAD would both version the artifact .devN past the tag
+and ship the commits that were deliberately left parked.
+
+Read the token after the cheap checks and before anything irreversible.  Run
+that read, the build and the upload through `dag/release--run', so a pinentry
+prompt or a slow upload leaves Emacs usable.  The git plumbing stays
+synchronous, since it costs milliseconds.
+
+Refuse rather than reset when the clone is not current.  A release is the wrong
+place to discard local state."
+  (unless (eq strategy 'pypi)
+    (error "gaffer release: %s has strategy %S, not pypi"
+           (gaffer-item-repo item) strategy))
+  (let* ((name (file-name-nondirectory (gaffer-item-repo item)))
+         (default-directory
+          (expand-file-name (format "~/projects/%s/master/" name)))
+         (landed (or (gaffer--release-sha item)
+                     (error "gaffer release: %s has no landed commit" name)))
+         (tagged nil)
+         (build-dir nil))
+    (unless (file-directory-p default-directory)
+      (error "gaffer release: no clone at %s" default-directory))
+    (unless (string-empty-p (dag/release--git! "status" "--porcelain" "-uno"))
+      (error "gaffer release: %s has tracked changes" name))
+    (dag/release--git! "fetch" "--tags" "--quiet" "origin")
+    (let ((head (dag/release--git! "rev-parse" "HEAD"))
+          (remote (dag/release--git! "rev-parse" "origin/master")))
+      (unless (equal head remote)
+        (error "gaffer release: %s is not at origin/master, sync it first" name))
+      (unless (zerop (car (dag/release--git "merge-base" "--is-ancestor"
+                                            landed "HEAD")))
+        (error "gaffer release: %s is not an ancestor of the head"
+               (substring landed 0 8)))
+      (let* ((last (dag/release--git! "describe" "--tags" "--abbrev=0"))
+             (since (dag/release--git! "rev-list" "--count"
+                                       (concat last ".." landed)))
+             (after (dag/release--git! "rev-list" "--count"
+                                       (concat landed "..HEAD")))
+             (tag (read-string
+                   (format "%s: tag %s (%s since %s, %s stay parked) as: "
+                           name (substring landed 0 8) since last after)
+                   (dag/release--bump last))))
+        (when (string-empty-p tag)
+          (error "gaffer release: no tag given"))
+        (unless (string-empty-p (dag/release--git! "tag" "--list" tag))
+          (error "gaffer release: tag %s already exists" tag))
+        ;; Only now read the token: a typo at the prompt or a tag that already
+        ;; exists costs no pinentry round-trip, and a missing entry still fails
+        ;; before the tag is created.
+        (let ((token (dag/release--pass
+                      "upload.pypi.org/legacy/__token__/password")))
+          (when (string-empty-p token)
+            (error "gaffer release: pass entry is empty"))
+          (unwind-protect
+              (progn
+                ;; Tag first: the build reads the version off this tag.
+                (dag/release--git! "tag" tag landed)
+                (setq tagged tag)
+                (setq build-dir (make-temp-file "gaffer-release-" t))
+                (dag/release--git! "worktree" "add" "--detach" build-dir tag)
+                (let ((default-directory (file-name-as-directory build-dir)))
+                  (unless (zerop (dag/release--run "*gaffer-release*" "uv"
+                                                   "build"))
+                    (error
+                     "gaffer release: uv build failed, see *gaffer-release*"))
+                  ;; Only ever through the environment.  A --token argument
+                  ;; would be readable from the process table.
+                  (let ((process-environment
+                         (cons (concat "UV_PUBLISH_TOKEN=" token)
+                               process-environment)))
+                    (unless (zerop (dag/release--run "*gaffer-release*" "uv"
+                                                     "publish"))
+                      (error "gaffer release: uv publish failed, see %s"
+                             "*gaffer-release*"))))
+                ;; Uploaded.  Push the tag only now, so the remote never carries
+                ;; a tag for a release that did not happen.  Clear the rollback
+                ;; BEFORE pushing: the version is irreversible from here, so a
+                ;; failed push has to leave the tag in place to be pushed again,
+                ;; not delete a tag whose version is already published.
+                (setq tagged nil)
+                (dag/release--git! "push" "origin" tag)
+                tag)
+            (when build-dir
+              (ignore-errors
+                (dag/release--git "worktree" "remove" "--force" build-dir)))
+            (when tagged
+              (dag/release--git "tag" "-d" tagged))))))))
+
+(with-eval-after-load 'gaffer
+  (setq gaffer-release-function #'dag/gaffer-release-pypi)
+  (dolist (repo '("greened/git-project" "greened/git-project-core-plugins"))
+    (setf (alist-get repo gaffer-repo-release-strategies nil nil #'equal)
+          'pypi)))
 
 ;;; Build and test the dotfiles repos with their own scripts rather than the
 ;;; fleet-wide backend, which is a build tool that has never heard of them.
