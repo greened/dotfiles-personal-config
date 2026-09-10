@@ -473,6 +473,46 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
     # shellcheck source=scrub-rules.sh
     . "$rules"
 
+    # Prove the rules still work, before trusting them.
+    #
+    # A dead shape rule fails OPEN and says nothing: it stops matching, the gate
+    # reports success, and the commit lands.  There is no symptom to notice.
+    # That is the failure the term list already handles loudly (see below) and
+    # the shapes did not.  So the assertions run here, where a broken rule can
+    # still stop the commit, rather than when someone remembers them.
+    #
+    # Every commit, uncached.  A cache keyed on the rules' mtime would make this
+    # free, and would also be one more thing that can report a pass for rules it
+    # never checked -- which is the exact failure being closed.  All 22
+    # assertions cost 0.09s on Linux and 0.2s on macOS, so there is nothing to
+    # buy.
+    #
+    # The test needs no term list of its own: it builds one from fictional terms
+    # in a temporary file.  So it runs identically on a machine with no work
+    # overlay, and it is checked before the term list is read for that reason.
+    selftest="$(cd "$(dirname "$0")" && pwd)/scrub-selftest.sh"
+    if [ ! -x "$selftest" ]; then
+      echo "scrub: cannot run $selftest -- refusing." >&2
+      echo "scrub: without it, a broken rule is indistinguishable from a clean repo." >&2
+      exit 1
+    fi
+    # `2>&1' because the failing cases go to stderr and the passing ones do not,
+    # and the report wants them interleaved in their original order.  Dropping
+    # the `ok' lines then leaves exactly the failures and their expected/got
+    # detail, which is what names the broken rule.
+    if ! selftest_out="$("$selftest" 2>&1)"; then
+      echo "!! ==================================================" >&2
+      echo "!! scrub: RULE SELF-TEST FAILED -- refusing to commit" >&2
+      echo "!!   The scrub's own assertions do not hold, so its rules cannot" >&2
+      echo "!!   be trusted to catch anything.  Failing cases:" >&2
+      printf '%s\n' "$selftest_out" | grep -avE '^ok  |^$' | sed 's/^/!!   /' >&2
+      echo "!!   Fix the rules in $rules." >&2
+      echo "!!   Run the test by hand with:" >&2
+      echo "!!     $selftest" >&2
+      echo "!! ==================================================" >&2
+      exit 1
+    fi
+
     # A missing term list means different things on different machines, and the
     # signal that tells them apart is whether this machine has work context at
     # all -- the realm file, which ships in the same private overlay as the term
