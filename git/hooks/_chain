@@ -542,8 +542,12 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
       # ending in a false test makes the whole substitution non-zero, which
       # aborts the commit -- silently, since the warning above looks like the
       # only thing that happened.
-      hits="$( { printf '%s\n' "$added" | sed -E "$shape_skip" \
-                   | grep -aoE "$shape_re" 2>/dev/null || true
+      # Shapes go through the shared `scrub_shape_hits', not a copy of its
+      # pipeline.  The rules consume a boundary character now that they no
+      # longer lean on `\b' (which `git grep -E' ignores on macOS), and that
+      # helper trims it back off, so the reported hits stay the bare tokens
+      # they have always been.
+      hits="$( { printf '%s\n' "$added" | scrub_shape_hits || true
                  if [ -n "$scrub_re" ]; then
                    printf '%s\n' "$added" | grep -aoiE "$scrub_re" 2>/dev/null || true
                  fi

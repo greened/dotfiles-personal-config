@@ -73,9 +73,48 @@ scrub_term_re() {
 # Jira-key rule fires on any lowercase hyphen-digits string ("abc-1234"), which
 # is everywhere.  That case sensitivity is also why a lowercase stand-in such as
 # `acme-1234' is safe to write in documentation.
-shape_re='\b[a-z][a-z0-9]{1,20}-cb\b'                 # work-account handle suffix
-shape_re="$shape_re"'|(^|[^A-Za-z0-9/])/cb/[a-z]'     # work NFS root
-shape_re="$shape_re"'|\b[A-Z]{2,6}-[0-9]{4,6}\b'      # Jira-style key
+# NO `\b' IN THESE, and the reason is not the one on shape_skip below.
+#
+# `\b' is a GNU extension.  Whether it is honoured depends on which engine reads
+# the pattern, not on the pattern: the system grep here honours it, and so does
+# `git grep -E' on Linux, but `git grep -E' on macOS does NOT and silently
+# matches nothing.  A consumer that hands these rules to `git grep' therefore
+# gets a rule that quietly stops existing, on one platform only.
+#
+# That is not hypothetical.  gazette's check.sh did exactly that, and a README
+# carrying five real Jira keys passed its gate twice (2026-09-09).
+#
+# THIS hook was never affected: `_chain' pipes through the SYSTEM grep, where
+# `\b' works, and all three shapes were verified firing.  So for the pre-commit
+# path this is not a fix for a live hole.  It removes the dependency on which
+# engine happens to read the rules, so the next consumer cannot inherit the trap.
+#
+# `scrub-audit.sh' IS affected, and differently: it scans no shape rules at all,
+# only the term list, and it matches with `git grep -E'.  `scrub_term_re' emits
+# its own `\b' around a word-boundaried term, so on macOS that audit's term scan
+# matches nothing and reports clean.  Fixing the shapes here does not touch it.
+#
+# Explicit boundaries CONSUME a character, unlike `\b'.  Harmless for detection
+# and for `grep -c', and `grep -o' output gains a boundary character.
+shape_re='(^|[^A-Za-z0-9])[a-z][a-z0-9]{1,20}-cb([^A-Za-z0-9]|$)'   # work handle
+shape_re="$shape_re"'|(^|[^A-Za-z0-9/])/cb/[a-z]'                   # work NFS root
+shape_re="$shape_re"'|(^|[^A-Za-z0-9])[A-Z]{2,6}-[0-9]{4,6}([^A-Za-z0-9]|$)'  # Jira key
+
+# Print the shape-rule hits in stdin, one matched TOKEN per line.
+#
+# Use this rather than `grep -oE "$shape_re"' directly.  The rules consume a
+# boundary character where `\b' used to assert one, so a raw `-o' match carries
+# stray punctuation into whatever the caller displays.  Trimming here keeps that
+# detail with the rules that cause it, and keeps every consumer's output the
+# same as it was before the boundaries became explicit.
+#
+# The leading trim spares `/', because the NFS-root rule's match legitimately
+# BEGINS with one and that rule consumes no leading character at line start.
+scrub_shape_hits() {   # stdin -> matched tokens, one per line
+  sed -E "$shape_skip" \
+    | grep -aoE "$shape_re" 2>/dev/null \
+    | sed -E 's#^[^A-Za-z0-9/]##; s#[^A-Za-z0-9]$##'
+}
 
 # Blank the allowlisted tokens INSIDE each line, then look at what is left.
 # Dropping whole lines instead (`grep -v') let a real leak sharing a line with

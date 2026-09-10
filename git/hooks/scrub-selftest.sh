@@ -37,9 +37,11 @@ fail=0
 #   empty string for "nothing".
 check() {
   local desc="$1" expected="$2" input="$3" got
-  got="$(printf '%s\n' "$input" \
-           | sed -E "$shape_skip" \
-           | grep -aoE "$shape_re" 2>/dev/null | tr '\n' ' ' || true)"
+  # Through the SHARED helper, not a local copy of the pipeline.  A test that
+  # reimplements what it is testing cannot catch a change in it -- and the
+  # boundary trim this helper does is precisely the kind of detail a copy drifts
+  # from.
+  got="$(printf '%s\n' "$input" | scrub_shape_hits | tr '\n' ' ' || true)"
   got="${got% }"
   if [ "$got" = "$expected" ]; then
     printf 'ok    %s\n' "$desc"
@@ -64,7 +66,12 @@ check "a fictional key used in docs is exempt"  "" "an issue key such as ACME-12
 # Real shapes.
 check "a work-shaped issue key is caught"       "$key"      "fixes $key today"
 check "a work-account handle is caught"         "$handle"   "github: $handle"
-check "the work NFS root is caught"             " /$sfx/h"  "lives in $root"
+# No leading space in the expectation any more.  This rule always consumed the
+# character before the match, and the expectation encoded that artifact; the
+# other two rules now consume one too, and `scrub_shape_hits' trims it for all
+# three.  So the token is what is reported, consistently, and this line changed
+# because the OUTPUT got cleaner, not to make a failing test pass.
+check "the work NFS root is caught"             "/$sfx/h"   "lives in $root"
 
 # Case sensitivity is load-bearing: it is why a lowercase stand-in is safe to
 # write, and why matching case-insensitively would fire on ordinary prose.
