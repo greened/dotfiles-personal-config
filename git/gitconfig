@@ -9,32 +9,79 @@
 #   3. ~/.gitconfig.local             HAND-WRITTEN, for settings true of ONE
 #                                     machine and no other
 #
+# Layer 1 is included immediately below.  Layers 2 and 3 are included at the
+# BOTTOM of this file, after the identity rules, and the note down there says
+# why that position is not a matter of taste.
+#
 # Layer 2 is a build artifact -- link.sh truncates and regenerates it on every
 # run, so anything hand-written there is lost. It used to be called
-# `.gitconfig.local`, which is the conventional name for layer 3 and made the two
+# `.gitconfig.local', which is the conventional name for layer 3 and made the two
 # easy to confuse; the generated one was renamed rather than the hand-written
 # one.
 #
 # Layer 3 is untracked and ungenerated, and git skips the include entirely when
 # the file is absent -- so a machine that needs nothing carries nothing. First
-# use: the Mac's `credential.helper = pass-git-helper`, which needs the homebrew
+# use: the Mac's `credential.helper = pass-git-helper', which needs the homebrew
 # bin on PATH. That path exists on no other machine, and a hardcoded
 # /opt/homebrew in a tracked file is exactly what this layer prevents.
 [include]
 	path = ~/lib/dotfiles/git/gitconfig
-	path = ~/.gitconfig.overlays
-	path = ~/.gitconfig.local
 [core]
 	# Global hook dispatcher: chains to any repo-local hook, and strips AI
 	# co-author trailers on non-work (personal) repos. See git/hooks/_chain.
 	hooksPath = ~/lib/dotfiles-overlays/personal-config/git/hooks
-# Per-location author identity. Repos under personal roots use dag@obbligato.org
-# (GitHub: greened); everything else defaults to the work identity in
-# ~/.gitconfig.overlays. The pre-commit hook (git/hooks/_chain) is the backstop that
-# also covers greened-origin repos outside these paths.
+# useConfigOnly is what actually makes "no fallback" true.  Without it git
+# INVENTS an identity from the login name and the machine's hostname when none
+# is configured, and that is the worst of the available outcomes: a hostname is
+# itself identifying, and it lands in the commit log of whichever repo you
+# happened to be standing in.  Clearing the unconditional addresses below was
+# not enough on its own; this is the line that turns a silent guess into a
+# refusal.
+[user]
+	useConfigOnly = true
+
+# Per-location author identity.  EVERY identity is conditional and NONE is a
+# default: a repo matching no rule gets no e-mail, and git refuses to commit
+# until one is chosen.  That is deliberate.  An address used to be set
+# unconditionally, so a repo cloned outside these roots took it silently and
+# you found out from the commit log.  Fail closed and loud beats fail open and
+# quiet.  The pre-commit hook (git/hooks/_chain) is a second backstop for
+# greened-origin repos.
+#
+# identity-personal carries the address AND the GitHub id together.  They
+# travel as a unit on purpose: the id identifies you exactly as well as the
+# address does, and keeping them apart is how one of them stayed wrong
+# everywhere while the other was being carefully scoped.
+#
+# The include paths must stay ABSOLUTE here.  A relative include resolves
+# against the directory of the file git actually opened, and git opens this one
+# as ~/.gitconfig, a symlink -- so `path = identity-personal' looks for
+# ~/identity-personal, does not find it, and is skipped WITHOUT ERROR.  The
+# whole personal identity then vanishes and every personal repo refuses to
+# commit.  Measured, both directions: the same relative path resolves correctly
+# when the file is opened by its real path and silently fails through the
+# symlink.
 [includeIf "gitdir:~/src/"]
 	path = ~/lib/dotfiles-overlays/personal-config/git/identity-personal
 [includeIf "gitdir:~/projects/"]
 	path = ~/lib/dotfiles-overlays/personal-config/git/identity-personal
 [includeIf "gitdir:~/lib/"]
 	path = ~/lib/dotfiles-overlays/personal-config/git/identity-personal
+
+# ORDER IS LOAD-BEARING.  This include must stay at the BOTTOM of the file.
+#
+# Git config is last-value-wins and includes are evaluated top to bottom.  The
+# roots above are broad, so the only way an overlay can carve a narrower
+# location back out of one -- a single work checkout under an otherwise
+# personal root, say -- is to be read AFTER them.  Move this include up beside
+# the base layer and every such exception inverts silently: no error, no
+# warning, and no diff in the overlay that declared it.
+#
+# Nothing here is "most specific wins".  Git config has no such rule.
+#
+# The exceptions themselves live in the overlay that owns them, because naming
+# those locations here would put them in a publishable repo.  This file states
+# the mechanism and does not enumerate the cases.
+[include]
+	path = ~/.gitconfig.overlays
+	path = ~/.gitconfig.local

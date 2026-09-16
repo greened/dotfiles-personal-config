@@ -1,5 +1,13 @@
-# Personal identity (dag@obbligato.org / GitHub: greened).
+# Personal identity: address and GitHub id together.
 # Included by gitconfig via includeIf for personal repo locations.
+#
+# The id belongs here rather than in an overlay's unconditional block.  It was
+# set unconditionally in two overlays at once, work included second, so work
+# won and EVERY personal repo reported the work id.  The address was being
+# scoped carefully at the time and said nothing about it, which is why the two
+# now travel together.
 [user]
 	name = David Greene
 	email = dag@obbligato.org
+[github]
+	user = greened
