@@ -296,6 +296,32 @@
     (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
           'ff-merge)))
 
+;;; gaffer: where git-project and core-plugins live on disk.  Without an entry
+;;; `gaffer--repo-path' raises, and that costs two separate things.  Worktree
+;;; resolution goes away, so an item's `worktree' has to be set by hand.  And
+;;; `gaffer--released-p' loses the fallback it reads once a worktree is torn
+;;; down, which is normal after landing.
+;;;
+;;; The second one is the dangerous half.  That call sits inside
+;;; `ignore-errors', so the raise is swallowed and the answer is nil -- and nil
+;;; does not merely park the item, it also stops `gaffer-release' recognising a
+;;; cut somebody already made.  A missing path turns a no-op into a DUPLICATE
+;;; release.
+;;;
+;;; The path is the WORKTREE, not the directory above it.  Both repos use the
+;;; nested layout, so the parent holds the bare store and no working tree at
+;;; all; git run there reports "not a git repository".  A worktree shares the
+;;; object store, so tags resolve identically either way.
+;;;
+;;; These are laptop paths, unlike the work repos above, which are TRAMP
+;;; handles to the VM.  `dag/gaffer-release-pypi' already hardcodes this same
+;;; ~/projects/<name>/master, and a release is laptop-only, so a local checkout
+;;; also spares every queue refresh a TRAMP hop.
+(with-eval-after-load 'gaffer
+  (dolist (name '("git-project" "git-project-core-plugins"))
+    (setf (alist-get (concat "greened/" name) gaffer-repo-paths nil nil #'equal)
+          (expand-file-name (format "~/projects/%s/master" name)))))
+
 ;;; gaffer: how git-project and core-plugins RELEASE.  Landing is not shipping
 ;;; for these two.  They are python packages on PyPI, so `done' has to mean
 ;;; RELEASED rather than merged, and listing them in
