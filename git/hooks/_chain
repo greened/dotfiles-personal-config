@@ -190,6 +190,95 @@ if [ "$hook" = "commit-msg" ]; then
   fi
 fi
 
+# 2b) commit-msg policy: WARN when a message never met the prose gate.
+#
+#     THIS IS A BACKSTOP, not the check. The check is upstream and earlier: a
+#     PreToolUse hook lints a draft and runs the slop filter before the editor
+#     opens it, so a message David has read has already been through both. This
+#     arm covers the commit that skipped that path, which is `git commit -m'
+#     from a session or a script.
+#
+#     IT WARNS AND NEVER REFUSES. A fail-closed check on every commit is
+#     another way to block all work, and a gate like it has blocked commits in
+#     these repos before.
+#
+#     IT NEVER REWRITES, and that survives the reversal of the no-rewrite rule.
+#     The filter upstream does rewrite his prose, because he asked for that.
+#     It rewrites BEFORE he reads the draft. By the time this hook runs the
+#     message is approved, and editing approved text changes what he approved.
+#
+#     IT HOLDS NO RULES OF ITS OWN. `prose-lint.py' is the authority for what
+#     counts as slop. A second copy of the rules here would diverge from it,
+#     and the copy nobody is looking at is the one that goes wrong.
+if [ "$hook" = "commit-msg" ]; then
+  msg="$1"
+  # Config first and a default second, the same shape the realm file uses. The
+  # selftest needs a path it can name, because it runs under a throwaway HOME
+  # where the default resolves to nothing and the whole arm would skip itself.
+  lint="$(git config --get prose.lintPath 2>/dev/null || true)"
+  [ -n "$lint" ] || lint="$HOME/.claude/skills-personal/bin/prose-lint.py"
+
+  hook_mtime() {   # portable: GNU stat, then BSD stat
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+  }
+
+  # A gate file not older than HEAD means a gate closed in this repo since the
+  # last commit, so this message came through the editor and was linted there.
+  # That is the freshness test the commit gate uses on its receipt, reused
+  # rather than restated: an approval from before the last commit is spent.
+  #
+  # NOT OLDER rather than strictly newer, because mtimes here are whole seconds
+  # and a gate plus its commit land inside one second often enough to matter.
+  # The two errors are not equal: suppressing one warning costs nothing, and a
+  # redundant warning on every gated commit is what makes the check ignored.
+  gated=""
+  hook_gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
+  if [ -n "$hook_gitdir" ] && [ -f "$hook_gitdir/CLAUDE_COMMIT_MSG" ]; then
+    head_at="$(git log -1 --format=%ct 2>/dev/null || echo 0)"
+    gate_at="$(hook_mtime "$hook_gitdir/CLAUDE_COMMIT_MSG")"
+    [ "${gate_at:-0}" -ge "${head_at:-0}" ] && gated=1
+  fi
+
+  # The config stores are exempt, and this is not a convenience. A watcher
+  # commits them on a cadence with nobody reading the output, so a warning
+  # there fires forever into a log and teaches everyone to scroll past the one
+  # place this hook ever speaks.
+  hook_origin="$(git config --get remote.origin.url 2>/dev/null || true)"
+  case "$hook_origin" in
+    *skills-personal*|*memory-personal*) gated=1 ;;
+  esac
+
+  if [ -z "$gated" ] && [ -f "$lint" ] && command -v python3 >/dev/null 2>&1; then
+    body="$(mktemp)"
+    # Comments and the scissors region are git's text rather than his, so the
+    # linter never sees them. Without this the diff below a scissors marker
+    # would be linted as prose.
+    git stripspace --strip-comments < "$msg" > "$body" 2>/dev/null || cp "$msg" "$body"
+    case "$(head -n 1 "$body" 2>/dev/null || true)" in
+      # Generated or mechanical, so there is no prose to judge. A rebase writes
+      # these without anybody choosing the words.
+      "Merge "*|"Revert "*|"fixup!"*|"squash!"*|"amend!"*) : ;;
+      *)
+        # THE EXIT CODE DECIDES, never the output. The linter prints a summary
+        # on every run, a clean one included, so speaking whenever it said
+        # anything warned on every commit. Exit 1 is its own verdict that a
+        # finding is unambiguous, which is the threshold to borrow rather than
+        # to re-decide here. Any other code is the linter having a problem, and
+        # that stays silent.
+        found=""
+        rc=0
+        found="$(python3 "$lint" --surface commit --file "$body" 2>/dev/null)" || rc=$?
+        if [ "$rc" -eq 1 ]; then
+          echo "prose-lint: this message did not come through the editor gate." >&2
+          printf '%s\n' "$found" >&2
+          echo "prose-lint: a warning only, so the commit stands. Amend to fix it." >&2
+        fi
+        ;;
+    esac
+    rm -f "$body"
+  fi
+fi
+
 # 3) pre-commit policy: ensure the author identity matches the repo's realm.
 #    Personal -> David Greene <dag@obbligato.org> (GitHub greened); work -> the
 #    `identity' address from the work-signal file, which is where the employer
