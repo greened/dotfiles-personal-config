@@ -231,16 +231,29 @@
   ;; sibling gets tested depends on what the index happens to hold.  $s finds
   ;; that checkout under either layout: a worktree sits beside the repo on the
   ;; build VM and one directory deeper on the laptop, so probe the flat layout
-  ;; first and fall back to the nested one.  The sibling installs first and
-  ;; brings the third-party dependencies, then the project itself installs with
-  ;; --no-deps, which is what lets core-plugins build against a git-project
-  ;; that the index does not carry yet.
+  ;; first and fall back to the nested one.
+  ;;
+  ;; Which of the two carries the dependencies is fixed by ROLE, not by which
+  ;; one is under test.  git-project always installs WITH its dependencies and
+  ;; core-plugins always installs --no-deps, whichever of them is the project
+  ;; and whichever is the sibling.  Only core-plugins names a floor the index
+  ;; cannot satisfy -- it needs the git-project API that is still unreleased --
+  ;; so resolving its dependencies asks for a version that cannot exist, while
+  ;; git-project's own are ordinary third-party packages.  A symmetric rule
+  ;; reads better and fails: building git-project then installs core-plugins
+  ;; with dependencies, and uv refuses the whole environment.  That made
+  ;; git-project's build gate depend on a release of git-project.
   ;;
   ;; The check ignores the user's git configuration.  One core-plugins test
   ;; pushes to a fixture remote and would otherwise fire the pre-push hook.
   (dolist (p '(("git-project" "j" "git-project-core-plugins")
                ("git-project-core-plugins" "P" "git-project")))
     (let* ((name (nth 0 p)) (key (nth 1 p)) (sibling (nth 2 p))
+           (self-is-git-project (equal name "git-project"))
+           ;; The path of each role, as the shell sees it: one is ".", the
+           ;; other is the "$s" the probe below resolves.
+           (git-project-path (if self-is-git-project "." "\"$s\""))
+           (core-plugins-path (if self-is-git-project "\"$s\"" "."))
            (find-sibling
             (format "s=../%s; [ -f \"$s/pyproject.toml\" ] || s=../../%s/master;"
                     sibling sibling)))
@@ -258,9 +271,10 @@
                          (concat find-sibling
                                  " uv venv --python 3.11 --allow-existing .venv"
                                  " && uv pip install --python .venv/bin/python"
-                                 " -q -e \"$s\" pytest pytest-console-scripts"
+                                 " -q -e " git-project-path
+                                 " pytest pytest-console-scripts"
                                  " && uv pip install --python .venv/bin/python"
-                                 " -q --no-deps -e ."))
+                                 " -q --no-deps -e " core-plugins-path))
                    (list :name "check" :command "check" :key "k"
                          :shell-command
                          (concat "GIT_CONFIG_GLOBAL=/dev/null"
