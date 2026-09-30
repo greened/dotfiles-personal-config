@@ -421,6 +421,14 @@ process cannot turn the cleanup into a question and strand the token."
       (let ((kill-buffer-query-functions nil))
         (kill-buffer buffer)))))
 
+(defun dag/release--step (name what &optional no-interrupt)
+  "Say in the echo area that NAME's release starts step WHAT.
+With NO-INTERRUPT, also say not to interrupt it."
+  (message (if no-interrupt
+               "gaffer: %s release: %s... (do not interrupt)"
+             "gaffer: %s release: %s...")
+           name what))
+
 (defun dag/gaffer-release-pypi (item strategy)
   "Cut ITEM's PyPI release and return the tag, for `gaffer-release-function'.
 
@@ -454,9 +462,12 @@ place to discard local state."
          (build-dir nil))
     (unless (file-directory-p default-directory)
       (error "gaffer release: no clone at %s" default-directory))
+    (dag/release--step name "clean check")
     (unless (string-empty-p (dag/release--git! "status" "--porcelain" "-uno"))
       (error "gaffer release: %s has tracked changes" name))
+    (dag/release--step name "fetch tags")
     (dag/release--git! "fetch" "--tags" "--quiet" "origin")
+    (dag/release--step name "ancestry check")
     (let ((head (dag/release--git! "rev-parse" "HEAD"))
           (remote (dag/release--git! "rev-parse" "origin/master")))
       (unless (equal head remote)
@@ -488,11 +499,13 @@ place to discard local state."
           (unwind-protect
               (progn
                 ;; Tag first: the build reads the version off this tag.
+                (dag/release--step name (concat "tag " tag))
                 (dag/release--git! "tag" tag landed)
                 (setq tagged tag)
                 (setq build-dir (make-temp-file "gaffer-release-" t))
                 (dag/release--git! "worktree" "add" "--detach" build-dir tag)
                 (let ((default-directory (file-name-as-directory build-dir)))
+                  (dag/release--step name "build")
                   (unless (zerop (dag/release--run "*gaffer-release*" "uv"
                                                    "build"))
                     (error
@@ -502,6 +515,9 @@ place to discard local state."
                   (let ((process-environment
                          (cons (concat "UV_PUBLISH_TOKEN=" token)
                                process-environment)))
+                    ;; PyPI does not accept the same version twice. An
+                    ;; interrupt after this point leaves an upload with no tag.
+                    (dag/release--step name "upload" t)
                     (unless (zerop (dag/release--run "*gaffer-release*" "uv"
                                                      "publish"))
                       (error "gaffer release: uv publish failed, see %s"
@@ -512,6 +528,7 @@ place to discard local state."
                 ;; failed push has to leave the tag in place to be pushed again,
                 ;; not delete a tag whose version is already published.
                 (setq tagged nil)
+                (dag/release--step name "push tag" t)
                 (dag/release--git! "push" "origin" tag)
                 tag)
             (when build-dir
