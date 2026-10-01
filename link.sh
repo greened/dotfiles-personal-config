@@ -13,14 +13,14 @@ link "$OV/git/gitconfig" "$HOME/.gitconfig"
 # signals and the exempt list from ~/.config.  They are 600 on purpose: the
 # exempt list in particular says which repos are the employer-shaped ones.
 #
-# Git records only the executable bit, so 600 does not travel in a commit.  The
-# work overlay chmods its own copies, but that overlay is deliberately NOT in
-# the Mac's `.order', so nothing there ever restored the mode: a pull that
-# CHANGED one of these files had git recreate it under the umask, at 644, while
-# its untouched siblings stayed 600.  Seen exactly that way on 2026-09-09.
+# Git records only the executable bit, so 600 does not travel in a commit. The
+# work overlay chmods its own copies, but only on a machine whose `.order'
+# lists it. When the Mac's did not, a pull that CHANGED one of these files had
+# git recreate it under the umask, at 644, while its untouched siblings stayed
+# 600. Seen exactly that way on 2026-09-09.
 #
-# Here rather than in the work overlay because this overlay runs on both
-# machines, and because it is the consumer: these files are read by the hooks
+# Here rather than in the work overlay because this overlay runs on every
+# machine, and because it is the consumer: these files are read by the hooks
 # this script installs.  `chmod' follows a symlink, so chmodding the deployed
 # path fixes the file wherever it actually lives, without this public repo
 # knowing which overlay provides it.
