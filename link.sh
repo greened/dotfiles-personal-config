@@ -21,7 +21,7 @@ link "$OV/git/gitconfig" "$HOME/.gitconfig"
 #
 # Here rather than in the work overlay because this overlay runs on every
 # machine, and because it is the consumer: these files are read by the hooks
-# this script installs.  `chmod' follows a symlink, so chmodding the deployed
+# this script installs. `chmod' follows a symlink, so chmodding the deployed
 # path fixes the file wherever it actually lives, without this public repo
 # knowing which overlay provides it.
 #
