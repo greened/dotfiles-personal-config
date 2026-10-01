@@ -1,0 +1,57 @@
+# repo-sync: the machines, the path map and the personal repos.
+#
+# Read by ~/lib/dotfiles/bin/repo-sync, whose header lists the keywords. It
+# lives under repo-sync/ and is named .list, so neither the tmux nor the bash
+# overlay glob picks it up.
+
+mac-socket  ~/.ssh/emacs-server
+mac-path    /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+mac-python  /opt/homebrew/bin/python3
+
+# vm-dir                     mac-dir
+root  ~/projects                 ~/projects
+root  ~/.claude/skills-personal  ~/projects/skills-personal
+root  ~/.claude/memory-personal  ~/projects/memory-personal
+root  ~/lib                      ~/lib
+
+# The VM clones name GitHub by this ssh alias.
+host-alias  greened-github  github.com
+
+repo  git@github.com:greened/gaffer.git
+push-trust  git@github.com:greened/gaffer.git
+repo  git@github.com:greened/prevue.git
+push-trust  git@github.com:greened/prevue.git
+repo  git@github.com:greened/gazette.git
+push-trust  git@github.com:greened/gazette.git
+repo  git@github.com:greened/quite.git
+push-trust  git@github.com:greened/quite.git
+repo  git@github.com:greened/quarry.git
+push-trust  git@github.com:greened/quarry.git
+repo  git@github.com:greened/slack-attention.git
+push-trust  git@github.com:greened/slack-attention.git
+repo  git@github.com:greened/tokenomics.git
+push-trust  git@github.com:greened/tokenomics.git
+repo  git@github.com:greened/git-project.git
+push-trust  git@github.com:greened/git-project.git
+repo  git@github.com:greened/git-project-core-plugins.git
+push-trust  git@github.com:greened/git-project-core-plugins.git
+repo  git@github.com:greened/coding-agent-recipes.git
+push-trust  git@github.com:greened/coding-agent-recipes.git
+repo  git@github.com:greened/dotfiles-public.git
+push-trust  git@github.com:greened/dotfiles-public.git
+repo  git@github.com:greened/dotfiles-personal-config.git
+repo  git@github.com:greened/dotfiles-personal-secret.git
+push-trust  git@github.com:greened/dotfiles-personal-secret.git
+
+# David said on 2026-09-29 to leave these three diverged branches alone.
+leave  git@github.com:greened/gaffer.git  store-write-keeps-previous
+leave  git@github.com:greened/gaffer.git  concurrent-build-state
+leave  git@github.com:greened/gaffer.git  outgoing-messages-at-push
+
+# Pre-PR review scratch, and the https second clones in _wip.
+exclude-path  /tmp/*
+exclude-path  /private/tmp/*
+exclude-path  ~/projects/_wip/*
+
+# The Mac reaches the greened account only with this key.
+ssh-key  github.com/greened/*  ~/.ssh/greened-github  mac
