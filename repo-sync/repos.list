@@ -48,6 +48,12 @@ leave  git@github.com:greened/gaffer.git  store-write-keeps-previous
 leave  git@github.com:greened/gaffer.git  concurrent-build-state
 leave  git@github.com:greened/gaffer.git  outgoing-messages-at-push
 
+# Diverged between the machines, left until the prevue session sorts them.
+leave  git@github.com:greened/prevue.git  area-fp-persist
+leave  git@github.com:greened/prevue.git  ignore-expiry
+leave  git@github.com:greened/prevue.git  rate-limit-aware
+leave  git@github.com:greened/prevue.git  store-write-keeps-previous
+
 # Pre-PR review scratch, kept as a safety net, the https second clones in
 # _wip, and the second clones in split-staging.
 exclude-path  /tmp/*
