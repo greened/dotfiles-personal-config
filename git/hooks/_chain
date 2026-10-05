@@ -94,6 +94,22 @@ hook_realm() {
   printf '%s' "$realm"
 }
 
+# 0) post-rewrite: log git's <old> <new> pairs for prevue, which uses them to
+#    carry a review checkpoint across a rebase or an amend. Read stdin once,
+#    because the repo-local hook below would otherwise consume it.
+#
+#    Fail open. A failed write must not stop the repo-local hook below.
+rewrites=""
+if [ "$hook" = "post-rewrite" ]; then
+  rewrites="$(cat || true)"
+  if [ -n "$rewrites" ]; then
+    log="$(git rev-parse --git-path prevue-rewrites 2>/dev/null || true)"
+    if [ -n "$log" ]; then
+      { printf '%s\n' "$rewrites" >>"$log"; } 2>/dev/null || true
+    fi
+  fi
+fi
+
 # 1) Chain to the repo-local hook of the same name, if present and not ourselves.
 #
 # TWO git dirs, not one.  Inside a linked worktree `--absolute-git-dir` returns
@@ -118,7 +134,12 @@ do
   [ "$local_hook" != "$self" ] || continue
   [ "$local_hook" != "$ran_local" ] || continue
   ran_local="$local_hook"
-  "$local_hook" "$@" || exit $?
+  if [ "$hook" = "post-rewrite" ]; then
+    "$local_hook" "$@" < <([ -z "$rewrites" ] || printf '%s\n' "$rewrites") \
+      || exit $?
+  else
+    "$local_hook" "$@" || exit $?
+  fi
 done
 
 # 1b) post-checkout: remind that a NEW WORKTREE still has to be wired into the
