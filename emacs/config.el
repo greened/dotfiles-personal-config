@@ -429,6 +429,43 @@ With NO-INTERRUPT, also say not to interrupt it."
              "gaffer: %s release: %s...")
            name what))
 
+(defun dag/release--existing-tag (tag landed)
+  "Decide what to do with TAG when it already exists, before LANDED ships.
+Return nil when there is no such tag, so the caller makes one. Return `reuse'
+when TAG already sits at LANDED and the user agrees to release anyway.
+Return the old tag object when the user agrees to move TAG to LANDED, so a
+failed release can put it back. Signal an error to refuse.
+
+A pushed tag that sits elsewhere is refused. Moving it would rewrite what
+other clones fetched, so that move is left to a person."
+  (unless (string-empty-p (dag/release--git! "tag" "--list" tag))
+    (let* ((ref (concat "refs/tags/" tag))
+           (at (dag/release--git! "rev-parse" (concat ref "^{commit}")))
+           (pushed (not (string-empty-p
+                         (dag/release--git! "ls-remote" "--tags" "origin"
+                                            ref)))))
+      (cond
+       ;; An earlier run that uploaded and then failed to push leaves exactly
+       ;; this tag, and PyPI refuses that version a second time. So ask.
+       ((equal at landed)
+        (unless (y-or-n-p
+                 (format (if pushed
+                             "Tag %s is already pushed, so PyPI may have \
+this version. Release anyway? "
+                           "Tag %s already sits here, so an earlier run may \
+have uploaded it. Release anyway? ")
+                         tag))
+          (error "gaffer release: tag %s already exists" tag))
+        'reuse)
+       (pushed
+        (error "gaffer release: tag %s is pushed at %s, not at %s"
+               tag (substring at 0 8) (substring landed 0 8)))
+       ((y-or-n-p (format "Tag %s is at %s. Move it to %s? "
+                          tag (substring at 0 8) (substring landed 0 8)))
+        (dag/release--git! "rev-parse" ref))
+       (t
+        (error "gaffer release: tag %s already exists" tag))))))
+
 (defun dag/gaffer-release-pypi (item strategy)
   "Cut ITEM's PyPI release and return the tag, for `gaffer-release-function'.
 
@@ -459,6 +496,8 @@ place to discard local state."
          (landed (or (gaffer--release-sha item)
                      (error "gaffer release: %s has no landed commit" name)))
          (tagged nil)
+         (moved nil)
+         (existing nil)
          (build-dir nil))
     (unless (file-directory-p default-directory)
       (error "gaffer release: no clone at %s" default-directory))
@@ -487,11 +526,10 @@ place to discard local state."
                    (dag/release--bump last))))
         (when (string-empty-p tag)
           (error "gaffer release: no tag given"))
-        (unless (string-empty-p (dag/release--git! "tag" "--list" tag))
-          (error "gaffer release: tag %s already exists" tag))
-        ;; Only now read the token: a typo at the prompt or a tag that already
-        ;; exists costs no pinentry round-trip, and a missing entry still fails
-        ;; before the tag is created.
+        (setq existing (dag/release--existing-tag tag landed))
+        ;; Only now read the token: a typo at the prompt or a tag that cannot
+        ;; be used costs no pinentry round-trip, and a missing entry still
+        ;; fails before the tag is created.
         (let ((token (dag/release--pass
                       "upload.pypi.org/legacy/__token__/password")))
           (when (string-empty-p token)
@@ -499,9 +537,16 @@ place to discard local state."
           (unwind-protect
               (progn
                 ;; Tag first: the build reads the version off this tag.
-                (dag/release--step name (concat "tag " tag))
-                (dag/release--git! "tag" tag landed)
-                (setq tagged tag)
+                (cond
+                 ((eq existing 'reuse))
+                 (existing
+                  (dag/release--step name (concat "move tag " tag))
+                  (dag/release--git! "tag" "--force" tag landed)
+                  (setq moved existing))
+                 (t
+                  (dag/release--step name (concat "tag " tag))
+                  (dag/release--git! "tag" tag landed)
+                  (setq tagged tag)))
                 (setq build-dir (make-temp-file "gaffer-release-" t))
                 (dag/release--git! "worktree" "add" "--detach" build-dir tag)
                 (let ((default-directory (file-name-as-directory build-dir)))
@@ -527,7 +572,7 @@ place to discard local state."
                 ;; BEFORE pushing: the version is irreversible from here, so a
                 ;; failed push has to leave the tag in place to be pushed again,
                 ;; not delete a tag whose version is already published.
-                (setq tagged nil)
+                (setq tagged nil moved nil)
                 (dag/release--step name "push tag" t)
                 (dag/release--git! "push" "origin" tag)
                 tag)
@@ -535,7 +580,12 @@ place to discard local state."
               (ignore-errors
                 (dag/release--git "worktree" "remove" "--force" build-dir)))
             (when tagged
-              (dag/release--git "tag" "-d" tagged))))))))
+              (dag/release--git "tag" "-d" tagged))
+            ;; A moved tag goes back to its old object, so an annotated tag
+            ;; keeps its annotation.
+            (when moved
+              (dag/release--git "update-ref" (concat "refs/tags/" tag)
+                                moved))))))))
 
 (with-eval-after-load 'gaffer
   (setq gaffer-release-function #'dag/gaffer-release-pypi)
