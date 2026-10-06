@@ -1,12 +1,12 @@
 ;; -*- lexical-binding: t -*-
 ;;
-;; Personal (non-sensitive) overlay.  Loaded after the public base config.
+;; Personal (non-sensitive) overlay. Loaded after the public base config.
 ;; Holds personal-but-shareable configuration: my own C style, the MIRV
 ;; project build hydra, and the LLVM / C++ standards mailing-list saved
-;; searches.  Nothing here is sensitive or identity-bearing; that lives in
+;; searches. Nothing here is sensitive or identity-bearing; that lives in
 ;; the private (secret) overlay.
 
-;;; org-jira: install the package generically.  Employer-specific
+;;; org-jira: install the package generically. Employer-specific
 ;;; configuration (Jira URL, JQL, store-link advice) lives in a private
 ;;; overlay via `with-eval-after-load'.
 
@@ -170,9 +170,9 @@
 
 (with-eval-after-load 'quite
   ;; Every one of these is a shell project: quite runs the command's
-  ;; :shell-command and nothing else.  They have a single build flavor, so none
+  ;; :shell-command and nothing else. They have a single build flavor, so none
   ;; declares :prefixes or :transforms -- the lone flavor is named by :target
-  ;; and there are no C-u variants.  Two commands each, deliberately: `build'
+  ;; and there are no C-u variants. Two commands each, deliberately: `build'
   ;; and `check' are the verbs gaffer drives (`quite-run-repo' looks them up by
   ;; :command), and for a repo whose whole check is one script they are the same
   ;; script.
@@ -217,17 +217,17 @@
   (quite-register-repo "greened/quite"
                        :project "quite" :build-target "quite" :test-target "quite")
 
-  ;; The Python packages build with uv, which both machines have.  Building the
+  ;; The Python packages build with uv, which both machines have. Building the
   ;; distribution is deliberately NOT the build verb: it writes dist/ into the
   ;; worktree, and those artifacts are untracked, so they would surface as
-  ;; noise in every later worktree review.  Creating the environment is
+  ;; noise in every later worktree review. Creating the environment is
   ;; idempotent, leaves nothing a review sees (uv writes a .venv/.gitignore
   ;; holding "*"), and still fails when the environment cannot be built --
   ;; which is what a build gate is for.
   ;;
   ;; The two packages are developed together, and core-plugins pins a
   ;; git-project that is not released yet, so each environment installs the
-  ;; sibling from a local checkout instead of from the index.  Otherwise which
+  ;; sibling from a local checkout instead of from the index. Otherwise which
   ;; sibling gets tested depends on what the index happens to hold.  $s finds
   ;; that checkout under either layout: a worktree sits beside the repo on the
   ;; build VM and one directory deeper on the laptop, so probe the flat layout
@@ -236,15 +236,15 @@
   ;; Which of the two carries the dependencies is fixed by ROLE, not by which
   ;; one is under test.  git-project always installs WITH its dependencies and
   ;; core-plugins always installs --no-deps, whichever of them is the project
-  ;; and whichever is the sibling.  Only core-plugins names a floor the index
+  ;; and whichever is the sibling. Only core-plugins names a floor the index
   ;; cannot satisfy -- it needs the git-project API that is still unreleased --
   ;; so resolving its dependencies asks for a version that cannot exist, while
-  ;; git-project's own are ordinary third-party packages.  A symmetric rule
+  ;; git-project's own are ordinary third-party packages. A symmetric rule
   ;; reads better and fails: building git-project then installs core-plugins
-  ;; with dependencies, and uv refuses the whole environment.  That made
+  ;; with dependencies, and uv refuses the whole environment. That made
   ;; git-project's build gate depend on a release of git-project.
   ;;
-  ;; The check ignores the user's git configuration.  One core-plugins test
+  ;; The check ignores the user's git configuration. One core-plugins test
   ;; pushes to a fixture remote and would otherwise fire the pre-push hook.
   (dolist (p '(("git-project" "j" "git-project-core-plugins")
                ("git-project-core-plugins" "P" "git-project")))
@@ -285,21 +285,21 @@
                            :build-target name
                            :test-target name))))
 
-;;; gaffer: how my personal repos publish.  Every one of them is a quite
+;;; gaffer: how my personal repos publish. Every one of them is a quite
 ;;; project (the block above), so none needs a `gaffer-repo-build-backends'
 ;;; override any more -- gaffer's global `quite' backend, which the work overlay
-;;; pins, now reaches them through quite itself.  One mechanism per repo.
+;;; pins, now reaches them through quite itself. One mechanism per repo.
 ;;;
-;;; What they DO need is a publish strategy.  Without one the default resolution
+;;; What they DO need is a publish strategy. Without one the default resolution
 ;;; reaches its last clause -- no PR number, not listed here, branch is not the
 ;;; default branch -- and picks `open-pr', which would open a pull request on
-;;; repos that have never had one.  They all land the same way: fast-forward the
+;;; repos that have never had one. They all land the same way: fast-forward the
 ;;; default branch.
 
 ;;; The dotfiles repos land the same way, and are listed here for the same
 ;;; reason: without an entry the default resolution sees a dev branch that is
 ;;; not the default branch and picks `open-pr', which would open a pull request
-;;; on repos that have never had one.  The work overlay adds its own, since
+;;; on repos that have never had one. The work overlay adds its own, since
 ;;; naming it here would put the employer in a public repo.
 (with-eval-after-load 'gaffer
   (dolist (repo '("greened/gaffer" "greened/prevue" "greened/gazette"
@@ -310,25 +310,25 @@
     (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
           'ff-merge)))
 
-;;; gaffer: where git-project and core-plugins live on disk.  Without an entry
-;;; `gaffer--repo-path' raises, and that costs two separate things.  Worktree
-;;; resolution goes away, so an item's `worktree' has to be set by hand.  And
+;;; gaffer: where git-project and core-plugins live on disk. Without an entry
+;;; `gaffer--repo-path' raises, and that costs two separate things. Worktree
+;;; resolution goes away, so an item's `worktree' has to be set by hand. And
 ;;; `gaffer--released-p' loses the fallback it reads once a worktree is torn
 ;;; down, which is normal after landing.
 ;;;
-;;; The second one is the dangerous half.  That call sits inside
+;;; The second one is the dangerous half. That call sits inside
 ;;; `ignore-errors', so the raise is swallowed and the answer is nil -- and nil
 ;;; does not merely park the item, it also stops `gaffer-release' recognising a
-;;; cut somebody already made.  A missing path turns a no-op into a DUPLICATE
+;;; cut somebody already made. A missing path turns a no-op into a DUPLICATE
 ;;; release.
 ;;;
-;;; The path is the WORKTREE, not the directory above it.  Both repos use the
+;;; The path is the WORKTREE, not the directory above it. Both repos use the
 ;;; nested layout, so the parent holds the bare store and no working tree at
-;;; all; git run there reports "not a git repository".  A worktree shares the
+;;; all; git run there reports "not a git repository". A worktree shares the
 ;;; object store, so tags resolve identically either way.
 ;;;
 ;;; These are laptop paths, unlike the work repos above, which are TRAMP
-;;; handles to the VM.  `dag/gaffer-release-pypi' already hardcodes this same
+;;; handles to the VM. `dag/gaffer-release-pypi' already hardcodes this same
 ;;; ~/projects/<name>/master, and a release is laptop-only, so a local checkout
 ;;; also spares every queue refresh a TRAMP hop.
 (with-eval-after-load 'gaffer
@@ -336,22 +336,22 @@
     (setf (alist-get (concat "greened/" name) gaffer-repo-paths nil nil #'equal)
           (expand-file-name (format "~/projects/%s/master" name)))))
 
-;;; gaffer: how git-project and core-plugins RELEASE.  Landing is not shipping
-;;; for these two.  They are python packages on PyPI, so `done' has to mean
+;;; gaffer: how git-project and core-plugins RELEASE. Landing is not shipping
+;;; for these two. They are python packages on PyPI, so `done' has to mean
 ;;; RELEASED rather than merged, and listing them in
-;;; `gaffer-repo-release-strategies' is what says so.  Every other repo above
+;;; `gaffer-repo-release-strategies' is what says so. Every other repo above
 ;;; has no entry, rolls through `to-release' untouched, and keeps `done' meaning
 ;;; MERGED.
 ;;;
 ;;; The handler tags, builds and uploads as ONE act, which is deliberate rather
-;;; than a shortcut.  `gaffer--released-p' answers "has this shipped?" by
+;;; than a shortcut. `gaffer--released-p' answers "has this shipped?" by
 ;;; running `git tag --contains', and that is what lets one release clear every
-;;; other item parked at `to-release'.  A tag standing on its own would
-;;; therefore make gaffer believe work shipped when it had not.  Hence two
+;;; other item parked at `to-release'. A tag standing on its own would
+;;; therefore make gaffer believe work shipped when it had not. Hence two
 ;;; safeguards: the local tag is deleted if any later step fails, and the tag is
 ;;; pushed LAST, only after a successful upload.
 ;;;
-;;; It runs on this machine.  The token lives in `pass', which is not installed
+;;; It runs on this machine. The token lives in `pass', which is not installed
 ;;; on the build VM and is not going to be, so a release is laptop-only however
 ;;; the artifact gets built.
 
@@ -363,7 +363,7 @@ Return a cons of the exit status and the trimmed output."
           (string-trim (buffer-string)))))
 
 (defun dag/release--git! (&rest args)
-  "Run git with ARGS, signalling on a non-zero exit.  Return trimmed output."
+  "Run git with ARGS, signalling on a non-zero exit. Return trimmed output."
   (let ((result (apply #'dag/release--git args)))
     (unless (zerop (car result))
       (error "git %s: %s" (string-join args " ") (cdr result)))
@@ -381,14 +381,14 @@ Return TAG unchanged when it does not end in a number."
   "Run PROGRAM with ARGS, logging into BUFFER, and return its exit status.
 Wait with `accept-process-output' rather than using `call-process', so that
 redisplay, C-g and gpg-agent's pinentry keep working while a build or an upload
-runs.  A synchronous call freezes Emacs for the whole release, and against a
+runs. A synchronous call freezes Emacs for the whole release, and against a
 cold gpg-agent it can wedge it outright.
 
-Two details are load-bearing.  Give the child a PIPE rather than a pty, so gpg
-cannot decide to prompt on a terminal nothing is reading.  And drain after the
+Two details are load-bearing. Give the child a PIPE rather than a pty, so gpg
+cannot decide to prompt on a terminal nothing is reading. And drain after the
 process dies, because `process-live-p' goes nil as soon as the exit is
 recorded, which says nothing about whether the output has been read out of the
-pipe yet.  `call-process' guaranteed that; a liveness loop alone does not."
+pipe yet. `call-process' guaranteed that; a liveness loop alone does not."
   (let* ((process-connection-type nil)
          (proc (apply #'start-file-process
                       (format "dag-release-%s" program) buffer program args)))
@@ -407,7 +407,7 @@ pipe yet.  `call-process' guaranteed that; a liveness loop alone does not."
 (defun dag/release--pass (entry)
   "Return the first line of pass ENTRY, leaving it in no live buffer.
 Read through `dag/release--run', so a pinentry prompt cannot freeze Emacs, and
-kill the buffer afterwards rather than let a token sit in one.  The kill is
+kill the buffer afterwards rather than let a token sit in one. The kill is
 unconditional: `kill-buffer-query-functions' is bound away so a surviving
 process cannot turn the cleanup into a question and strand the token."
   (let ((buffer (generate-new-buffer " *dag-release-pass*")))
@@ -469,9 +469,9 @@ have uploaded it. Release anyway? ")
 (defun dag/gaffer-release-pypi (item strategy)
   "Cut ITEM's PyPI release and return the tag, for `gaffer-release-function'.
 
-Tag ITEM's own commit, which is the release CUT POINT.  Everything up to and
-including it ships and its items clear to `done'.  Anything that landed after
-it stays parked at `to-release' for a later cut.  That falls out of
+Tag ITEM's own commit, which is the release CUT POINT. Everything up to and
+including it ships and its items clear to `done'. Anything that landed after
+it stays parked at `to-release' for a later cut. That falls out of
 `gaffer--released-p' testing CONTAINMENT, so cutting at an item is how you
 choose where a release stops.
 
@@ -480,12 +480,12 @@ takes the version from the tag reachable at zero distance from the BUILD TREE,
 so building the clone's HEAD would both version the artifact .devN past the tag
 and ship the commits that were deliberately left parked.
 
-Read the token after the cheap checks and before anything irreversible.  Run
+Read the token after the cheap checks and before anything irreversible. Run
 that read, the build and the upload through `dag/release--run', so a pinentry
-prompt or a slow upload leaves Emacs usable.  The git plumbing stays
+prompt or a slow upload leaves Emacs usable. The git plumbing stays
 synchronous, since it costs milliseconds.
 
-Refuse rather than reset when the clone is not current.  A release is the wrong
+Refuse rather than reset when the clone is not current. A release is the wrong
 place to discard local state."
   (unless (eq strategy 'pypi)
     (error "gaffer release: %s has strategy %S, not pypi"
@@ -555,7 +555,7 @@ place to discard local state."
                                                    "build"))
                     (error
                      "gaffer release: uv build failed, see *gaffer-release*"))
-                  ;; Only ever through the environment.  A --token argument
+                  ;; Only ever through the environment. A --token argument
                   ;; would be readable from the process table.
                   (let ((process-environment
                          (cons (concat "UV_PUBLISH_TOKEN=" token)
@@ -567,8 +567,8 @@ place to discard local state."
                                                      "publish"))
                       (error "gaffer release: uv publish failed, see %s"
                              "*gaffer-release*"))))
-                ;; Uploaded.  Push the tag only now, so the remote never carries
-                ;; a tag for a release that did not happen.  Clear the rollback
+                ;; Uploaded. Push the tag only now, so the remote never carries
+                ;; a tag for a release that did not happen. Clear the rollback
                 ;; BEFORE pushing: the version is irreversible from here, so a
                 ;; failed push has to leave the tag in place to be pushed again,
                 ;; not delete a tag whose version is already published.
@@ -599,7 +599,7 @@ place to discard local state."
 ;;; Wired because a repo with no build backend can NEVER satisfy the `built'
 ;;; gate: gaffer requires the `:build-ok' artifact to be PRESENT, an absent one
 ;;; reads as unverified, and leaving the stage then takes a human override every
-;;; single time.  A routine override is how a gate stops meaning anything, and
+;;; single time. A routine override is how a gate stops meaning anything, and
 ;;; there is real work to check here -- byte-compiling the local packages caught
 ;;; a live error the tests missed.
 ;;;
@@ -611,14 +611,14 @@ place to discard local state."
         '(:build-backend shell :build-command "./check.sh build"
           :test-backend  shell :test-command  "./check.sh test"))
   ;; This repo has no elisp of its own to compile -- its content is the git hook
-  ;; chain -- so only the test half is real work.  The selftest covers the
+  ;; chain -- so only the test half is real work. The selftest covers the
   ;; scrub's shape rules and its literal-term builder.
   ;;
   ;; The build command is a deliberate stand-in, and states as much when it
-  ;; runs.  An ABSENT `:build-backend' would fall back to the fleet-wide one,
+  ;; runs. An ABSENT `:build-backend' would fall back to the fleet-wide one,
   ;; which is a build tool that knows nothing about this repo, so the choice is
   ;; not between this and nothing -- it is between saying "nothing to build" out
-  ;; loud and running something meaningless.  Replace it with a declared
+  ;; loud and running something meaningless. Replace it with a declared
   ;; no-build once gaffer can express one.
   (setf (alist-get "greened/dotfiles-personal-config" gaffer-repo-build-backends
                    nil nil #'equal)
@@ -627,17 +627,17 @@ place to discard local state."
           :test-backend  shell
           :test-command  "git/hooks/scrub-selftest.sh")))
 
-;;; Calendars for the agenda.  The package is declared in the public base; what
+;;; Calendars for the agenda. The package is declared in the public base; what
 ;;; belongs here is which calendars to read.
 ;;;
 ;;; The address is a `pass' entry read through a lambda rather than a string,
 ;;; per the token-provider pattern the other packages use: a Google secret
 ;;; calendar address is a credential -- it grants read access to the whole
 ;;; calendar to anyone holding it -- so it must not sit in a repo, public or
-;;; not.  The lambda defers the lookup to fetch time, so a rotated address is
+;;; not. The lambda defers the lookup to fetch time, so a rotated address is
 ;;; picked up without restarting Emacs.
 ;;;
-;;; The work calendar is not here.  It goes in the work overlay once it has a
+;;; The work calendar is not here. It goes in the work overlay once it has a
 ;;; published iCalendar address, and joins this same alist.
 
 (with-eval-after-load 'agenda-feeds
