@@ -327,14 +327,15 @@
 ;;; all; git run there reports "not a git repository". A worktree shares the
 ;;; object store, so tags resolve identically either way.
 ;;;
-;;; These are laptop paths, unlike the work repos above, which are TRAMP
-;;; handles to the VM. `dag/gaffer-release-pypi' already hardcodes this same
-;;; ~/projects/<name>/master, and a release is laptop-only, so a local checkout
-;;; also spares every queue refresh a TRAMP hop.
+;;; These are laptop paths, used when no other overlay names a clone. The
+;;; release handler reads this same entry, and it may be remote.
 (with-eval-after-load 'gaffer
   (dolist (name '("git-project" "git-project-core-plugins"))
-    (setf (alist-get (concat "greened/" name) gaffer-repo-paths nil nil #'equal)
-          (expand-file-name (format "~/projects/%s/master" name)))))
+    (let ((repo (concat "greened/" name)))
+      (unless (assoc repo gaffer-repo-paths)
+        (push (cons repo (expand-file-name
+                          (format "~/projects/%s/master" name)))
+              gaffer-repo-paths)))))
 
 ;;; gaffer: how git-project and core-plugins RELEASE. Landing is not shipping
 ;;; for these two. They are python packages on PyPI, so `done' has to mean
@@ -351,16 +352,18 @@
 ;;; safeguards: the local tag is deleted if any later step fails, and the tag is
 ;;; pushed LAST, only after a successful upload.
 ;;;
-;;; It runs on this machine. The token lives in `pass', which is not installed
-;;; on the build VM and is not going to be, so a release is laptop-only however
-;;; the artifact gets built.
+;;; The tag and the build happen in the clone this entry names, which may be
+;;; remote. The upload runs on this machine, because the token lives in `pass'
+;;; here and never leaves it.
 
 (defun dag/release--git (&rest args)
-  "Run git with ARGS in `default-directory'.
-Return a cons of the exit status and the trimmed output."
-  (with-temp-buffer
-    (cons (apply #'call-process "git" nil t nil args)
-          (string-trim (buffer-string)))))
+  "Run git with ARGS in `default-directory', which may be remote.
+Return a cons of the exit status and the trimmed output. On a plain ssh host
+`gaffer--call' cuts a read off after `gaffer-remote-call-timeout'. A bare
+`process-file' over TRAMP has no bound."
+  (let ((result (gaffer--call default-directory "git" args
+                              (gaffer--call-deadline "git" args))))
+    (cons (car result) (string-trim (cdr result)))))
 
 (defun dag/release--git! (&rest args)
   "Run git with ARGS, signalling on a non-zero exit. Return trimmed output."
@@ -377,6 +380,12 @@ Return TAG unchanged when it does not end in a number."
               (number-to-string (1+ (string-to-number (match-string 2 tag)))))
     tag))
 
+(defvar dag/release--child-env nil
+  "VAR=VALUE strings that `dag/release--run' gives its child and nothing else.
+Bound here rather than in `process-environment', which stays in force while
+the run waits. A timer or sentinel that starts a TRAMP process in that wait
+would copy it onto the remote command line.")
+
 (defun dag/release--run (buffer program &rest args)
   "Run PROGRAM with ARGS, logging into BUFFER, and return its exit status.
 Wait with `accept-process-output' rather than using `call-process', so that
@@ -390,8 +399,11 @@ process dies, because `process-live-p' goes nil as soon as the exit is
 recorded, which says nothing about whether the output has been read out of the
 pipe yet. `call-process' guaranteed that; a liveness loop alone does not."
   (let* ((process-connection-type nil)
-         (proc (apply #'start-file-process
-                      (format "dag-release-%s" program) buffer program args)))
+         (proc (let ((process-environment
+                      (append dag/release--child-env process-environment)))
+                 (apply #'start-file-process
+                        (format "dag-release-%s" program) buffer program
+                        args))))
     ;; Never prompt about killing it: this runs inside an `unwind-protect', and
     ;; a query there can strand the buffer it is trying to clean up.
     (set-process-query-on-exit-flag proc nil)
@@ -410,7 +422,9 @@ Read through `dag/release--run', so a pinentry prompt cannot freeze Emacs, and
 kill the buffer afterwards rather than let a token sit in one. The kill is
 unconditional: `kill-buffer-query-functions' is bound away so a surviving
 process cannot turn the cleanup into a question and strand the token."
-  (let ((buffer (generate-new-buffer " *dag-release-pass*")))
+  (let ((buffer (generate-new-buffer " *dag-release-pass*"))
+        ;; `pass' is on this machine, whatever clone the caller is in.
+        (default-directory temporary-file-directory))
     (unwind-protect
         (progn
           (unless (zerop (dag/release--run buffer "pass" "show" entry))
@@ -466,6 +480,34 @@ have uploaded it. Release anyway? ")
        (t
         (error "gaffer release: tag %s already exists" tag))))))
 
+(defun dag/release--undo (what &rest args)
+  "Run git ARGS to undo WHAT, and warn rather than signal when that fails.
+A failure here must not hide the error that started the cleanup. The
+warning names the clone and the command to run by hand, since a tag left
+behind makes `gaffer--released-p' report a release that never happened.
+
+Forget that the host is down first. A dropped connection earlier in the
+release marks it down, and every undo would then fail without trying."
+  (when-let ((host (file-remote-p default-directory)))
+    (remhash host gaffer--hosts-down))
+  (let ((result (condition-case e
+                    (apply #'dag/release--git args)
+                  (error (cons -1 (error-message-string e))))))
+    (unless (eql (car result) 0)
+      (display-warning
+       'gaffer
+       (format "release cleanup: could not %s in %s (%s). Run: git %s"
+               what default-directory (cdr result)
+               (mapconcat #'shell-quote-argument args " "))
+       :error))))
+
+(defun dag/release--version-p (file version)
+  "Return non-nil when FILE's basename carries exactly VERSION.
+A wheel puts a dash after the version and an sdist ends in .tar.gz, so a
+.devN version or a local suffix does not match."
+  (string-match-p (concat "-" (regexp-quote version) "\\(?:-\\|\\.tar\\.gz\\'\\)")
+                  (file-name-nondirectory file)))
+
 (defun dag/gaffer-release-pypi (item strategy)
   "Cut ITEM's PyPI release and return the tag, for `gaffer-release-function'.
 
@@ -475,15 +517,16 @@ it stays parked at `to-release' for a later cut. That falls out of
 `gaffer--released-p' testing CONTAINMENT, so cutting at an item is how you
 choose where a release stops.
 
+Tag and build in the clone `gaffer-repo-paths' names, which may be remote.
 Build in a throwaway worktree at the tag rather than in the clone.  hatch-vcs
 takes the version from the tag reachable at zero distance from the BUILD TREE,
 so building the clone's HEAD would both version the artifact .devN past the tag
 and ship the commits that were deliberately left parked.
 
-Read the token after the cheap checks and before anything irreversible. Run
-that read, the build and the upload through `dag/release--run', so a pinentry
-prompt or a slow upload leaves Emacs usable. The git plumbing stays
-synchronous, since it costs milliseconds.
+Copy the artifacts to this machine and upload them from here, since the token
+lives in `pass' here. Read the token after the cheap checks and before
+anything irreversible. Run that read, the build and the upload through
+`dag/release--run', so a pinentry prompt or a slow upload leaves Emacs usable.
 
 Refuse rather than reset when the clone is not current. A release is the wrong
 place to discard local state."
@@ -492,14 +535,16 @@ place to discard local state."
            (gaffer-item-repo item) strategy))
   (let* ((name (file-name-nondirectory (gaffer-item-repo item)))
          (default-directory
-          (expand-file-name (format "~/projects/%s/master/" name)))
+          (file-name-as-directory (gaffer--repo-path (gaffer-item-repo item))))
          (landed (or (gaffer--release-sha item)
                      (error "gaffer release: %s has no landed commit" name)))
          (tagged nil)
          (moved nil)
          (existing nil)
-         (build-dir nil))
-    (unless (file-directory-p default-directory)
+         (build-dir nil)
+         (added nil)
+         (dist-dir nil))
+    (unless (zerop (car (dag/release--git "rev-parse" "--git-dir")))
       (error "gaffer release: no clone at %s" default-directory))
     (dag/release--step name "clean check")
     (unless (string-empty-p (dag/release--git! "status" "--porcelain" "-uno"))
@@ -523,10 +568,30 @@ place to discard local state."
              (tag (read-string
                    (format "%s: tag %s (%s since %s, %s stay parked) as: "
                            name (substring landed 0 8) since last after)
-                   (dag/release--bump last))))
+                   (dag/release--bump last)))
+             (version (string-remove-prefix "v" tag)))
         (when (string-empty-p tag)
           (error "gaffer release: no tag given"))
+        ;; git reads a leading dash as an option, and check-ref-format
+        ;; accepts one.
+        (when (or (string-prefix-p "-" tag)
+                  (not (zerop (car (dag/release--git
+                                    "check-ref-format"
+                                    (concat "refs/tags/" tag))))))
+          (error "gaffer release: %S is not a usable tag" tag))
+        ;; `gaffer--released-p' sees only tags that match the pattern, so any
+        ;; other tag leaves the item parked and invites a second upload.
+        (unless (string-match-p (wildcard-to-regexp gaffer-release-tag-pattern)
+                                tag)
+          (error "gaffer release: %s does not match %s"
+                 tag gaffer-release-tag-pattern))
         (setq existing (dag/release--existing-tag tag landed))
+        (unless (executable-find "uv" t)
+          (error "gaffer release: no uv on %s"
+                 (or (file-remote-p default-directory 'host) "this machine")))
+        (unless (let ((default-directory temporary-file-directory))
+                  (executable-find "uv"))
+          (error "gaffer release: no uv on this machine"))
         ;; Only now read the token: a typo at the prompt or a tag that cannot
         ;; be used costs no pinentry round-trip, and a missing entry still
         ;; fails before the tag is created.
@@ -535,7 +600,7 @@ place to discard local state."
           (when (string-empty-p token)
             (error "gaffer release: pass entry is empty"))
           (unwind-protect
-              (progn
+              (let (files)
                 ;; Tag first: the build reads the version off this tag.
                 (cond
                  ((eq existing 'reuse))
@@ -547,26 +612,54 @@ place to discard local state."
                   (dag/release--step name (concat "tag " tag))
                   (dag/release--git! "tag" tag landed)
                   (setq tagged tag)))
-                (setq build-dir (make-temp-file "gaffer-release-" t))
-                (dag/release--git! "worktree" "add" "--detach" build-dir tag)
+                (setq build-dir (make-nearby-temp-file "gaffer-release-" t))
+                (dag/release--git! "worktree" "add" "--detach"
+                                   (file-local-name build-dir) tag)
+                (setq added t)
                 (let ((default-directory (file-name-as-directory build-dir)))
                   (dag/release--step name "build")
                   (unless (zerop (dag/release--run "*gaffer-release*" "uv"
                                                    "build"))
                     (error
                      "gaffer release: uv build failed, see *gaffer-release*"))
-                  ;; Only ever through the environment. A --token argument
-                  ;; would be readable from the process table.
-                  (let ((process-environment
-                         (cons (concat "UV_PUBLISH_TOKEN=" token)
-                               process-environment)))
-                    ;; PyPI does not accept the same version twice. An
-                    ;; interrupt after this point leaves an upload with no tag.
-                    (dag/release--step name "upload" t)
-                    (unless (zerop (dag/release--run "*gaffer-release*" "uv"
-                                                     "publish"))
-                      (error "gaffer release: uv publish failed, see %s"
-                             "*gaffer-release*"))))
+                  (let* ((built (directory-files "dist" t
+                                                 "\\.\\(?:whl\\|tar\\.gz\\)\\'"))
+                         (wheels (seq-filter
+                                  (lambda (f) (string-suffix-p ".whl" f))
+                                  built)))
+                    (unless (and (= (length wheels) 1) (= (length built) 2))
+                      (error "gaffer release: want one wheel and one sdist, \
+got %S" (mapcar #'file-name-nondirectory built)))
+                    (dolist (file built)
+                      (unless (dag/release--version-p file version)
+                        (error "gaffer release: %s is not version %s"
+                               (file-name-nondirectory file) version)))
+                    (setq dist-dir
+                          (let ((default-directory temporary-file-directory))
+                            (make-temp-file "gaffer-dist-" t)))
+                    (when (file-remote-p dist-dir)
+                      (error "gaffer release: %s is not on this machine"
+                             dist-dir))
+                    (set-file-modes dist-dir #o700)
+                    (dolist (file built)
+                      (let ((to (expand-file-name (file-name-nondirectory file)
+                                                  dist-dir)))
+                        (copy-file file to)
+                        (push to files)))))
+                (let ((default-directory (file-name-as-directory dist-dir))
+                      ;; Only ever through the child's environment, and only
+                      ;; for a local call. A --token argument would be
+                      ;; readable from the process table, and TRAMP copies
+                      ;; let-bound variables onto the remote command line.
+                      (dag/release--child-env
+                       (list (concat "UV_PUBLISH_TOKEN=" token))))
+                  ;; PyPI does not accept the same version twice. An interrupt
+                  ;; after this point leaves an upload with no tag.
+                  (dag/release--step name "upload" t)
+                  (unless (zerop (apply #'dag/release--run "*gaffer-release*"
+                                        "uv" "publish" files))
+                    (error "gaffer release: uv publish failed, see %s"
+                           "*gaffer-release*")))
                 ;; Uploaded. Push the tag only now, so the remote never carries
                 ;; a tag for a release that did not happen. Clear the rollback
                 ;; BEFORE pushing: the version is irreversible from here, so a
@@ -576,16 +669,29 @@ place to discard local state."
                 (dag/release--step name "push tag" t)
                 (dag/release--git! "push" "origin" tag)
                 tag)
-            (when build-dir
-              (ignore-errors
-                (dag/release--git "worktree" "remove" "--force" build-dir)))
+            (when dist-dir
+              (condition-case e
+                  (delete-directory dist-dir t)
+                (error (display-warning
+                        'gaffer
+                        (format "release cleanup: could not delete %s (%s)"
+                                dist-dir (error-message-string e))
+                        :error))))
             (when tagged
-              (dag/release--git "tag" "-d" tagged))
+              (dag/release--undo (concat "delete tag " tagged)
+                                 "tag" "-d" tagged))
             ;; A moved tag goes back to its old object, so an annotated tag
             ;; keeps its annotation.
             (when moved
-              (dag/release--git "update-ref" (concat "refs/tags/" tag)
-                                moved))))))))
+              (dag/release--undo (concat "restore tag " tag)
+                                 "update-ref" (concat "refs/tags/" tag) moved))
+            (cond
+             (added
+              (dag/release--undo "remove the build worktree"
+                                 "worktree" "remove" "--force"
+                                 (file-local-name build-dir)))
+             (build-dir
+              (ignore-errors (delete-directory build-dir))))))))))
 
 (with-eval-after-load 'gaffer
   (setq gaffer-release-function #'dag/gaffer-release-pypi)
