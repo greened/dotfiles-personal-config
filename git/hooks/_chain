@@ -5,8 +5,9 @@
 # It does two things, in order:
 #   1. Chains to the repo's OWN hook of the same name (in <gitdir>/hooks), so a
 #      global hooksPath does not silently disable per-repo hooks.
-#   2. Applies personal policy: on personal repos, strip AI co-author trailers
-#      (Claude / anthropic) from the commit message. Work repos keep their
+#   2. Applies personal policy: on personal repos, and on work-realm repos
+#      whose own policy takes none, strip AI co-author trailers (Claude /
+#      anthropic) from the commit message. Other work repos keep their
 #      trailers untouched. Human co-authors are never stripped.
 #
 # Rationale: personal repos must never carry an AI trailer; this enforces it
@@ -198,10 +199,41 @@ if [ "$hook" = "post-checkout" ]; then
   esac
 fi
 
-# 2) commit-msg policy: strip AI trailers unless this is a work repo.
+# Does this repo's own policy take an AI trailer? Echoes "yes" or "no", or
+# nothing when it cannot tell. A policy file that is there but cannot be read
+# says so on stderr, because the realm then decides and may keep a trailer.
+#
+# The realm alone is not enough: David's own tooling can sit on the work
+# account and read as work, yet take no trailer. `commit-context.py' holds
+# that list for the commit agent, so ask it rather than keep a second copy
+# here. It is asked through `profile_for' alone, because its full report
+# calls the network.
+hook_ai_trailer() {
+  local ctx
+  ctx="$(git config --get trailer.policyPath 2>/dev/null || true)"
+  [ -n "$ctx" ] || ctx="$HOME/.claude/skills-personal/bin/commit-context.py"
+  [ -f "$ctx" ] && command -v python3 >/dev/null 2>&1 || return 0
+  local got prog
+  prog='import importlib.util, sys
+spec = importlib.util.spec_from_file_location("commit_context", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print("yes" if mod.profile_for(sys.argv[2], sys.argv[3])["ai_trailer"] else "no")'
+  got="$(python3 -c "$prog" "$ctx" \
+          "$(git config --get remote.origin.url 2>/dev/null || true)" \
+          "$(git config --get user.email 2>/dev/null || true)" \
+          2>/dev/null || true)"
+  case "$got" in
+    yes|no) echo "$got" ;;
+    *) echo "trailer: cannot read the policy in $ctx, so the realm decides" >&2 ;;
+  esac
+}
+
+# 2) commit-msg policy: strip AI trailers unless this is a work repo that
+#    takes them. When the policy cannot be read, the realm decides alone.
 if [ "$hook" = "commit-msg" ]; then
   msg="$1"
-  if [ "$(hook_realm)" = personal ]; then
+  if [ "$(hook_realm)" = personal ] || [ "$(hook_ai_trailer)" = no ]; then
     tmp="$(mktemp)"
     # Drop AI co-author/assisted-by lines only (keep human co-authors).
     grep -viE '^(co-authored-by|assisted-by):[[:space:]].*(claude|anthropic)' "$msg" > "$tmp" || true
