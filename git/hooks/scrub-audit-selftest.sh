@@ -112,7 +112,7 @@ mkdir "$mut"
 cp "$here/scrub-audit.sh" "$here/scrub-rules.sh" "$here/scrub-selftest.sh" "$mut/"
 
 # A Jira-key rule that wants seven digits catches no real key.
-sed -i.orig 's/\[0-9\]{4,6}/[0-9]{7,9}/' "$mut/scrub-rules.sh"
+sed -i.orig 's/-\[0-9\]{4,6}/-[0-9]{7,9}/' "$mut/scrub-rules.sh"
 expect_dead "a dead shape rule fails the audit" "the rule self-test failed" \
             "a work-shaped issue key is caught"
 

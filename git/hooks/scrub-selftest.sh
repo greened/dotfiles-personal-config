@@ -28,6 +28,7 @@ sfx="c""b"                     # the work-account handle suffix
 handle="alice-$sfx"            # a fictional handle carrying that suffix
 root="/$sfx/home/alice/x"      # a path under the work NFS root
 key="$(printf 'ZZZ')-9999"     # a Jira-SHAPED key naming no real project
+pr="9999"                      # a PR number long enough to be a work one
 
 pass=0
 fail=0
@@ -68,10 +69,30 @@ check "a work-shaped issue key is caught"       "$key"      "fixes $key today"
 check "a work-account handle is caught"         "$handle"   "github: $handle"
 # No leading space in the expectation any more.  This rule always consumed the
 # character before the match, and the expectation encoded that artifact; the
-# other two rules now consume one too, and `scrub_shape_hits' trims it for all
-# three.  So the token is what is reported, consistently, and this line changed
-# because the OUTPUT got cleaner, not to make a failing test pass.
+# other two rules now consume one too, and `scrub_shape_hits' trims it for
+# every rule.  So the token is what is reported, consistently, and this line
+# changed because the OUTPUT got cleaner, not to make a failing test pass.
 check "the work NFS root is caught"             "/$sfx/h"   "lives in $root"
+check "a PR number is caught"                   "#$pr"      "merged in #$pr today"
+check "a PR number at line start is caught"     "#$pr"      "#$pr merged"
+check "a six-digit PR number is caught"         "#${pr}99"  "merged in #${pr}99 today"
+check "a PR# number is caught"                  "PR#$pr"    "see PR#$pr"
+check "a cross-repo PR number is caught"        "acme/repo#$pr" "see acme/repo#$pr"
+check "a PR number opening a string is caught"  "#$pr"      "(message \"#$pr landed\")"
+check "a PR number in compact JSON is caught"  "number\":$pr" "{\"number\":$pr}"
+check "a five-digit string is a PR number"      "#${pr}9"   "(gaffer \"#${pr}9\")"
+check "a PR number in gh JSON is caught"        "number\": $pr" "{\"number\": $pr}"
+check "a punctuated handle keeps its old token" "$handle"   "see #$handle"
+check "a PR number in a plist is caught"        "number $pr"  "(:number $pr :title x)"
+check "a PR number in an alist is caught"       "number . $pr" "((number . $pr))"
+check "a short PR number is not caught"         ""          "merged in #123"
+check "an Emacs bug number is not a PR number"  ""          "see Bug#$pr upstream"
+check "a hex colour is not a PR number"         ""          ':foreground "#000000"'
+check "an escaped hex colour is not a PR number" ""         ':palette "[\"#000001\"]"'
+check "a hex colour with letters is not one"    ""          ':background "#1234be"'
+check "an unquoted all-digit colour is caught"  "#${pr}99"  "color: #${pr}99;"
+check "a TRAMP port is not a PR number"         ""          "/ssh:host#2222:/tmp"
+check "an HTML entity is not a PR number"       ""          "a dash &#8212; here"
 
 # Case sensitivity is load-bearing: it is why a lowercase stand-in is safe to
 # write, and why matching case-insensitively would fire on ordinary prose.
