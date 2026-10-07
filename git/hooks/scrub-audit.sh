@@ -4,6 +4,9 @@
 #     git/hooks/scrub-audit.sh            # report to stdout
 #     git/hooks/scrub-audit.sh -o FILE    # ...to a file, mode 600
 #
+# It exits 1 when the rules fail their self-test or a term is inert, so a
+# dead rule fails the audit.
+#
 # Why a script and not a saved report: a report goes stale the moment a term
 # changes, and it contains the terms, so it wants the same care as the list
 # itself.  Regenerating is cheap.
@@ -48,6 +51,16 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/scrub-rules.sh"
+
+# Prove the rules before auditing with them. A dead shape rule matches nothing,
+# so its row would read as clean. The hook runs the same assertions on every
+# commit.
+if ! selftest_out="$("$here/scrub-selftest.sh" 2>&1)"; then
+  echo "scrub-audit: the rule self-test failed, so no count here can be trusted:" >&2
+  { printf '%s\n' "$selftest_out" | grep -avE '^ok  |^$' || true; } \
+    | sed 's/^/  /' >&2
+  exit 1
+fi
 
 out=""
 [ "${1:-}" = "-o" ] && { out="${2:?-o needs a file}"; }
@@ -191,13 +204,15 @@ report() {
   printf '%-4s %-30s %-5s %-9s %-8s %-7s %-11s %s\n' \
          '#' 'term' 'len' 'inPublic' 'private' 'myProse' 'dictHint' 'flags'
   i=0
+  inert=0
   while IFS= read -r raw; do
     t="${raw%%#*}"; t="$(printf '%s' "$t" | sed 's/[[:space:]]*$//')"
     [ -z "$t" ] && continue
     i=$((i + 1))
 
     # One-term regex, built by the SAME function the hook uses.
-    one="$(printf '%s\n' "$t" | scrub_term_re /dev/stdin)"
+    # A term that is only a legacy `\b' builds to nothing, and is inert.
+    one="$(printf '%s\n' "$t" | scrub_term_re /dev/stdin 2>/dev/null)" || one=''
 
     # Counted out of the pre-scanned match lists, by WHOLE-LINE literal
     # equality.  Each line of those lists is one matched substring, which for a
@@ -235,7 +250,10 @@ report() {
     # is how five dead terms audited clean: the pattern they had decayed into
     # still matched the line they sat on in the list.
     probe="$(printf '%s' "$t" | sed -e 's/^\\b//' -e 's/\\b$//')"
-    printf 'x %s y\n' "$probe" | grep -qiE -- "$one" || flags="$flags INERT"
+    if [ -z "$one" ] || ! printf 'x %s y\n' "$probe" | grep -qiE -- "$one"; then
+      flags="$flags INERT"
+      inert=$((inert + 1))
+    fi
     # Terms are literal text.  Anything left that grep would read as syntax is
     # a term written under the old pattern rules, and means something else.
     case "$probe" in
@@ -271,4 +289,10 @@ if [ -n "$out" ]; then
   echo "written to $out (mode 600 -- it quotes the terms)"
 else
   report
+fi
+
+# A term that cannot match its own text is a dead rule, so it fails the audit.
+if [ "$inert" -gt 0 ]; then
+  echo "scrub-audit: $inert term(s) cannot match their own text; see INERT." >&2
+  exit 1
 fi

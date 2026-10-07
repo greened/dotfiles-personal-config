@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Assert scrub-audit.sh finds a term and a shape in committed text. Run it by
-# hand after editing the audit:
+# Assert scrub-audit.sh finds a term and a shape in committed text, and fails
+# on a dead rule. Run it by hand after editing the audit:
 #
 #     git/hooks/scrub-audit-selftest.sh
 #
@@ -40,10 +40,17 @@ printf '\0\1\2' > "$root/binary/a.txt"
 git -C "$root/binary" -c user.name=T -c user.email=t@example.com \
     -c core.hooksPath=/dev/null commit -q -am b
 
-out="$(SCRUB_AUDIT_PUBLIC="$root/public" \
-       SCRUB_AUDIT_PRIVATE="$root/private $root/binary" \
-       SCRUB_AUDIT_PROSE="$root/public" "$here/scrub-audit.sh" \
-       2>"$root/stderr")"
+# audit DIR runs the scrub-audit.sh in DIR over the fixture repos, and sets rc.
+audit() {
+    rc=0
+    (cd "$root" && GIT_CONFIG_SYSTEM=/dev/null \
+    SCRUB_AUDIT_PUBLIC="$root/public" \
+    SCRUB_AUDIT_PRIVATE="$root/private $root/binary" \
+    SCRUB_AUDIT_PROSE="$root/public" "$1/scrub-audit.sh") || rc=$?
+}
+
+audit "$here" >"$root/out" 2>"$root/stderr"
+out="$(cat "$root/out")"
 
 # check DESCRIPTION PATTERN asserts that the report has a line matching
 # PATTERN, a grep -E pattern.
@@ -73,6 +80,55 @@ else
     sed 's/^/      /' "$root/stderr"
     fail=$((fail + 1))
 fi
+
+if [ "$rc" -eq 0 ]; then
+    echo "ok    a clean term list passes"
+    pass=$((pass + 1))
+else
+    echo "FAIL  a clean term list passes: exit $rc"
+    fail=$((fail + 1))
+fi
+
+# expect_dead DESCRIPTION MESSAGE... runs the audit in the mutant copy, and
+# asserts that it exits 1 and says every MESSAGE on stderr.
+expect_dead() {
+    local desc="$1" m said=1
+    shift
+    audit "$mut" >/dev/null 2>"$root/stderr"
+    for m in "$@"; do grep -qF -- "$m" "$root/stderr" || said=0; done
+    if [ "$rc" -eq 1 ] && [ "$said" -eq 1 ]; then
+        echo "ok    $desc"
+        pass=$((pass + 1))
+    else
+        echo "FAIL  $desc: exit $rc"
+        sed 's/^/      /' "$root/stderr"
+        fail=$((fail + 1))
+    fi
+}
+
+# The dead rules are made in a copy of the hooks, never in the real ones.
+mut="$root/mut"
+mkdir "$mut"
+cp "$here/scrub-audit.sh" "$here/scrub-rules.sh" "$here/scrub-selftest.sh" "$mut/"
+
+# A Jira-key rule that wants seven digits catches no real key.
+sed -i.orig 's/\[0-9\]{4,6}/[0-9]{7,9}/' "$mut/scrub-rules.sh"
+expect_dead "a dead shape rule fails the audit" "the rule self-test failed" \
+            "a work-shaped issue key is caught"
+
+# A builder that does not escape makes a `+' term inert. The self-test would
+# catch that first, so it is replaced here to reach the inert check.
+mv "$mut/scrub-rules.sh.orig" "$mut/scrub-rules.sh"
+sed -i.orig '/gsub(/d' "$mut/scrub-rules.sh"
+printf '#!/bin/sh\nexit 0\n' > "$mut/scrub-selftest.sh"
+printf 'zqxjv\na+b\n' > "$root/terms"
+expect_dead "an inert term fails the audit" "1 term(s) cannot match"
+
+# A term that is only a legacy anchor builds to nothing, so it is inert too.
+mv "$mut/scrub-rules.sh.orig" "$mut/scrub-rules.sh"
+cp "$here/scrub-selftest.sh" "$mut/"
+printf 'zqxjv\n\\b\n' > "$root/terms"
+expect_dead "a bare-anchor term fails the audit" "1 term(s) cannot match"
 
 if [ "$fail" -ne 0 ]; then
     printf '%s\n' "$out" | sed 's/^/      /'
