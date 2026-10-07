@@ -508,6 +508,27 @@ A wheel puts a dash after the version and an sdist ends in .tar.gz, so a
   (string-match-p (concat "-" (regexp-quote version) "\\(?:-\\|\\.tar\\.gz\\'\\)")
                   (file-name-nondirectory file)))
 
+(defun dag/release--changelog-top (text)
+  "Return the top dated release heading in changelog TEXT, or nil.
+The value is a cons of the version and the date. Expect a release heading
+of the form \"`X.Y.Z`_ - YYYY-MM-DD\" below an undated \"`Unreleased`_\"."
+  (when (string-match
+         (concat "^`\\([0-9][^`\n]*\\)`_ - "
+                 "\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)[ \t]*$")
+         text)
+    (cons (match-string 1 text) (match-string 2 text))))
+
+(defun dag/release--changelog-refusal (shown version today)
+  "Return why the changelog refuses VERSION on TODAY, or nil to go ahead.
+SHOWN is the (STATUS . OUTPUT) of `git show' for the changelog."
+  (if (not (zerop (car shown)))
+      (format "cannot read docs/changelog.rst: %s" (cdr shown))
+    (let ((top (dag/release--changelog-top (cdr shown))))
+      (unless (equal top (cons version today))
+        (format "docs/changelog.rst heads %s, not %s - %s"
+                (if top (format "%s - %s" (car top) (cdr top)) "no release")
+                version today)))))
+
 (defun dag/gaffer-release-pypi (item strategy)
   "Cut ITEM's PyPI release and return the tag, for `gaffer-release-function'.
 
@@ -529,7 +550,13 @@ anything irreversible. Run that read, the build and the upload through
 `dag/release--run', so a pinentry prompt or a slow upload leaves Emacs usable.
 
 Refuse rather than reset when the clone is not current. A release is the wrong
-place to discard local state."
+place to discard local state.
+
+Refuse when the changelog at the cut point does not head this version dated
+today. The date goes stale between drafting the notes and the cut. Fixing it
+here would make a commit that no gate reviews, so the fix goes through the
+usual flow and the release runs again. A retry on a later day refuses too.
+It needs a commit that redates the heading."
   (unless (eq strategy 'pypi)
     (error "gaffer release: %s has strategy %S, not pypi"
            (gaffer-item-repo item) strategy))
@@ -585,6 +612,14 @@ place to discard local state."
                                 tag)
           (error "gaffer release: %s does not match %s"
                  tag gaffer-release-tag-pattern))
+        ;; Today here, not on the clone's host: the release runs here.
+        (dag/release--step name "changelog check")
+        (let ((why (dag/release--changelog-refusal
+                    (dag/release--git "show"
+                                      (concat landed ":docs/changelog.rst"))
+                    version (format-time-string "%F"))))
+          (when why
+            (error "gaffer release: at %s, %s" (substring landed 0 8) why)))
         (setq existing (dag/release--existing-tag tag landed))
         (unless (executable-find "uv" t)
           (error "gaffer release: no uv on %s"
