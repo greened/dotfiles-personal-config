@@ -87,7 +87,8 @@ else
   PROSE="$PUBLIC"
   for d in "$HOME"/projects/*/; do
     d="${d%/}"
-    [ -d "$d/.git" ] || continue
+    # A git-project umbrella has a .git file that points at its store.
+    [ -e "$d/.git" ] || continue
     # Your OWN repos only, decided by the remote's owner.  ~/projects also
     # holds upstream forks -- LLVM trees and the like -- which are someone
     # else's text, enormous enough to turn this audit into a coffee break, and
@@ -98,7 +99,8 @@ else
   done
 fi
 
-# scan REGEX REPO... -- every matched substring across those repos, one a line.
+# dump REPO... prints the committed text of those repos. scan REGEX FILE prints
+# every substring of that text that matches, one a line.
 #
 # One recursive pass per repo SET, not one per term: two dozen terms across a
 # dozen checkouts is minutes of grep for data a single pass yields, and the
@@ -122,19 +124,49 @@ fi
 #
 # A path that is not a git repo falls back to a plain recursive grep, with the
 # transient names excluded.
-scan() {
-  local re="$1"; shift
-  local r
+#
+# git only lists the committed lines, and the system grep matches them, as it
+# does in `_chain'. `git grep -E' on macOS does not honour the `\b' that
+# `scrub_term_re' emits, so matching there missed every term that carries one.
+#
+# `^' matches every line in every grep. An empty pattern is not portable, and
+# a grep that rejects it would leave an empty dump that reads as clean. So a
+# repo that yields no text is named on stderr.
+dump() {
+  local r text
   for r in "$@"; do
     [ -d "$r" ] || continue
     if git -C "$r" rev-parse --verify HEAD >/dev/null 2>&1; then
-      git -C "$r" grep -h -o -i -E -e "$re" HEAD -- . 2>/dev/null || true
+      text="$(git -C "$r" grep -h -I -e '^' HEAD -- . 2>/dev/null || true)"
     else
-      grep -rhoiE -- "$re" "$r" --exclude-dir=.git \
+      text="$(grep -rhI -e '^' "$r" --exclude-dir=.git \
            --exclude='.nfs*' --exclude='.#*' --exclude='#*#' --exclude='*~' \
-           2>/dev/null || true
+           2>/dev/null || true)"
+    fi
+    if [ -z "$text" ]; then
+      echo "scrub-audit: no text read from $r" >&2
+    else
+      printf '%s\n' "$text"
     fi
   done
+}
+
+scan() {
+  grep -aoiE -- "$1" "$2" 2>/dev/null || true
+}
+
+# shapes LABEL FILE prints one summary row for the shape rules over that text.
+#
+# The shapes are case-sensitive and carry their own allowlist, so they go
+# through `scrub_shape_hits' and never through the term pattern. A shape names
+# no single term, so its row gives a count and a few of the tokens it matched.
+shapes() {
+  local hits n eg
+  hits="$(scrub_shape_hits < "$2" || true)"
+  n=$({ printf '%s\n' "$hits" | grep -c . || true; })
+  eg="$({ printf '%s\n' "$hits" | grep . || true; } \
+        | sort -u | head -3 | tr '\n' ',')"
+  printf '%-8s %-6s %s\n' "$1" "$n" "${eg%,}"
 }
 
 report() {
@@ -149,9 +181,13 @@ report() {
   for r in $PRIVATE; do printf 'private: %s\n' "$r"; done
   for r in $PROSE;   do printf 'prose:   %s\n' "$r"; done
   printf '\n'
-  pub_hits="$(scan "$full" $PUBLIC)"
-  priv_hits="$(scan "$full" $PRIVATE)"
-  prose_hits="$(scan "$full" $PROSE)"
+  # Each set's text is read once, for the terms and the shapes both.
+  dump $PUBLIC  > "$texts/public"
+  dump $PRIVATE > "$texts/private"
+  dump $PROSE   > "$texts/prose"
+  pub_hits="$(scan "$full" "$texts/public")"
+  priv_hits="$(scan "$full" "$texts/private")"
+  prose_hits="$(scan "$full" "$texts/prose")"
   printf '%-4s %-30s %-5s %-9s %-8s %-7s %-11s %s\n' \
          '#' 'term' 'len' 'inPublic' 'private' 'myProse' 'dictHint' 'flags'
   i=0
@@ -216,7 +252,18 @@ report() {
     printf '%-4s %-30s %-5s %-9s %-8s %-7s %-11s %s\n' \
            "$i" "$t" "${#t}" "$pub" "$priv" "$prose" "$dw" "${flags:- -}"
   done < "$terms_file"
+
+  # A shape hit in a public repo is a leak, and one in your prose is a commit
+  # the scrub would refuse there.
+  printf '\nshape rules\n%-8s %-6s %s\n' 'where' 'hits' 'examples'
+  shapes public  "$texts/public"
+  shapes private "$texts/private"
+  shapes myProse "$texts/prose"
 }
+
+# The directory is private because the text holds whatever the repos do.
+texts="$(mktemp -d)"
+trap 'rm -rf "$texts"' EXIT
 
 if [ -n "$out" ]; then
   umask 077

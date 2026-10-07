@@ -89,10 +89,8 @@ scrub_term_re() {
 # path this is not a fix for a live hole.  It removes the dependency on which
 # engine happens to read the rules, so the next consumer cannot inherit the trap.
 #
-# `scrub-audit.sh' IS affected, and differently: it scans no shape rules at all,
-# only the term list, and it matches with `git grep -E'.  `scrub_term_re' emits
-# its own `\b' around a word-boundaried term, so on macOS that audit's term scan
-# matches nothing and reports clean.  Fixing the shapes here does not touch it.
+# `scrub_term_re' emits `\b', so its consumers match in the system grep.
+# `scrub-audit.sh' lets git list the text and greps it there.
 #
 # Explicit boundaries CONSUME a character, unlike `\b'.  Harmless for detection
 # and for `grep -c', and `grep -o' output gains a boundary character.
