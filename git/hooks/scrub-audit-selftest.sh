@@ -47,8 +47,11 @@ out="$(SCRUB_AUDIT_PUBLIC="$root/public" \
 
 # check DESCRIPTION PATTERN asserts that the report has a line matching
 # PATTERN, a grep -E pattern.
+#
+# A here-string, not a pipe. `grep -q' exits at the first match, and under
+# `pipefail' the SIGPIPE that can kill the writer fails the check at random.
 check() {
-    if printf '%s\n' "$out" | grep -qE -- "$2"; then
+    if grep -qE -- "$2" <<<"$out"; then
         echo "ok    $1"
         pass=$((pass + 1))
     else
