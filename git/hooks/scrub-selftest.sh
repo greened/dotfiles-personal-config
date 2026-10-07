@@ -82,7 +82,8 @@ check "a lowercase hyphen-digits string is not a key" "" "the acme-1234 example"
 # and the cases stay readable.  Terms are matched case-insensitively, and the
 # boundary is added only to an edge that is a word character.
 terms="$(mktemp)"
-trap 'rm -f "$terms"' EXIT
+empty="$(mktemp)"
+trap 'rm -f "$terms" "$empty"' EXIT
 cat > "$terms" <<'TERMS'
 # a comment, ignored
 acorn
@@ -138,6 +139,21 @@ check_term "a term containing + is not expanded"       0 "the aab case"
 check_term "a legacy \\b-anchored term catches the bare word" 1 "a badger here"
 check_term "its stripped anchor still bounds the term"        0 "the badgers ran"
 check_term "it no longer matches its own written spelling"    0 'x \bbadger\b y'
+
+# A list of only comments and blank lines is refused, and the refusal names
+# the file. Read as an empty list, it would pass every employer name.
+printf '# only a comment\n\n' > "$empty"
+if err="$(scrub_term_re "$empty" 2>&1 >/dev/null)"; then
+  printf 'FAIL  a list with no terms is refused\n      it was accepted\n' >&2
+  fail=$((fail + 1))
+elif [ "${err#*"$empty"}" = "$err" ]; then
+  printf 'FAIL  a list with no terms is refused\n      the message does not name %s: %s\n' \
+         "$empty" "$err" >&2
+  fail=$((fail + 1))
+else
+  printf 'ok    a list with no terms is refused\n'
+  pass=$((pass + 1))
+fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

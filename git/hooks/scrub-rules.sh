@@ -57,16 +57,26 @@
 # the list on another machine would otherwise fail OPEN, and because such a term
 # still matches the line it sits on in the list itself, it goes on looking like a
 # term that works.
+#
+# A list with no terms, only comments and blank lines, is refused with a message
+# that names the file. Treating it as an empty list would let a truncated
+# deploy pass every employer name.
 scrub_term_re() {
-  sed -e 's/#.*$//' -e 's/[[:space:]]*$//' "$1" \
-    | grep -v '^[[:space:]]*$' \
+  local re
+  re="$(sed -e 's/#.*$//' -e 's/[[:space:]]*$//' "$1" \
+    | { grep -v '^[[:space:]]*$' || true; } \
     | awk '{ raw = $0
              sub(/^\\b/, "", raw); sub(/\\b$/, "", raw)
              t = raw
              gsub(/[][(){}.^$*+?|\\]/, "\\\\&", t)
              if (raw ~ /^[A-Za-z0-9_]/) t = "\\b" t
              if (raw ~ /[A-Za-z0-9_]$/) t = t "\\b"
-             printf "%s%s", sep, t; sep = "|" }'
+             printf "%s%s", sep, t; sep = "|" }')"
+  if [ -z "$re" ]; then
+    echo "scrub: refusing, because $1 holds no terms." >&2
+    return 1
+  fi
+  printf '%s' "$re"
 }
 
 # A shape rule is case-SENSITIVE on purpose.  Matched case-insensitively, the

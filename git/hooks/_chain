@@ -676,7 +676,7 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
     # on every commit for the same reason the exempt list does.
     scrub_re=''
     if [ -r "$terms_file" ]; then
-      scrub_re="$(scrub_term_re "$terms_file")"
+      scrub_re="$(scrub_term_re "$terms_file")" || exit 1
     elif [ ! -r "$(hook_realm_file)" ]; then
       : # no work context; shape rules only, and nothing to say about it
     elif [ "$(git config --get --type=bool scrub.allowNoTerms 2>/dev/null)" = true ]; then

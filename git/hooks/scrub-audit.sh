@@ -171,7 +171,7 @@ shapes() {
 
 report() {
   local full pub_hits priv_hits prose_hits r
-  full="$(scrub_term_re "$terms_file")"
+  full="$(scrub_term_re "$terms_file")" || exit 1
   # Name the inputs.  A count with no stated scope cannot be checked, and two
   # rounds of chasing a wrong number here came down to not knowing which trees
   # had been searched.
