@@ -206,27 +206,26 @@ fi
 # The realm alone is not enough: David's own tooling can sit on the work
 # account and read as work, yet take no trailer. `commit-context.py' holds
 # that list for the commit agent, so ask it rather than keep a second copy
-# here. It is asked through `profile_for' alone, because its full report
-# calls the network.
+# here. It is asked through `--ai-trailer', because its full report calls
+# the network. Any answer but yes or no leaves the realm to decide, and the
+# reason it gave is passed on.
 hook_ai_trailer() {
   local ctx
   ctx="$(git config --get trailer.policyPath 2>/dev/null || true)"
   [ -n "$ctx" ] || ctx="$HOME/.claude/skills-personal/bin/commit-context.py"
   [ -f "$ctx" ] && command -v python3 >/dev/null 2>&1 || return 0
-  local got prog
-  prog='import importlib.util, sys
-spec = importlib.util.spec_from_file_location("commit_context", sys.argv[1])
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-print("yes" if mod.profile_for(sys.argv[2], sys.argv[3])["ai_trailer"] else "no")'
-  got="$(python3 -c "$prog" "$ctx" \
+  local got err
+  err="$(mktemp)"
+  got="$(python3 "$ctx" --ai-trailer \
           "$(git config --get remote.origin.url 2>/dev/null || true)" \
           "$(git config --get user.email 2>/dev/null || true)" \
-          2>/dev/null || true)"
+          2>"$err" || true)"
   case "$got" in
     yes|no) echo "$got" ;;
-    *) echo "trailer: cannot read the policy in $ctx, so the realm decides" >&2 ;;
+    *) echo "trailer: cannot read the policy in $ctx, so the realm decides" >&2
+       sed 's/^/trailer:   /' "$err" >&2 ;;
   esac
+  rm -f "$err"
 }
 
 # 2) commit-msg policy: strip AI trailers unless this is a work repo that

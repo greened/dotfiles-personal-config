@@ -24,19 +24,24 @@ root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
 mkdir -p "$root/home"
 
-# The stub takes the real file's call shape: `profile_for(origin, email)'
-# returns a dict with `ai_trailer'. Only a repo named devtools takes none.
+# The stub takes the real file's call shape: `--ai-trailer REMOTE EMAIL'
+# prints yes or no. Only a repo named devtools takes none.
 ctx="$root/commit-context.py"
 cat > "$ctx" <<'PY'
-def profile_for(origin, email):
-    name = origin.rstrip("/").rsplit("/", 1)[-1]
-    if name.endswith(".git"):
-        name = name[:-4]
-    return {"ai_trailer": name != "devtools"}
+import sys
+assert sys.argv[1] == "--ai-trailer", sys.argv
+name = sys.argv[2].rstrip("/").rsplit("/", 1)[-1]
+if name.endswith(".git"):
+    name = name[:-4]
+print("no" if name == "devtools" else "yes")
 PY
+# The broken stub fails as the real one does on a remote with no owner.
 broken="$root/broken-context.py"
-printf 'def profile_for(origin, email):\n    raise KeyError("ai_trailer")\n' \
-       > "$broken"
+cat > "$broken" <<'PY'
+import sys
+print("commit-context: no owner in remote", file=sys.stderr)
+sys.exit(2)
+PY
 
 hooks="$root/hooks"
 cp -r "$here" "$hooks"
@@ -123,6 +128,13 @@ if printf '%s\n' "$last_out" | grep -q 'cannot read the policy'; then
     pass=$((pass + 1))
 else
     echo "FAIL  a broken policy is reported: no warning in the output"
+    fail=$((fail + 1))
+fi
+if printf '%s\n' "$last_out" | grep -q 'no owner in remote'; then
+    echo "ok    a broken policy's reason is passed on"
+    pass=$((pass + 1))
+else
+    echo "FAIL  a broken policy's reason is passed on: not in the output"
     fail=$((fail + 1))
 fi
 
