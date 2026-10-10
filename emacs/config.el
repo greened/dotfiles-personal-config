@@ -359,10 +359,9 @@
 (defun dag/release--git (&rest args)
   "Run git with ARGS in `default-directory', which may be remote.
 Return a cons of the exit status and the trimmed output. On a plain ssh host
-`gaffer--call' cuts a read off after `gaffer-remote-call-timeout'. A bare
+`gaffer-call' cuts a read off after `gaffer-remote-call-timeout'. A bare
 `process-file' over TRAMP has no bound."
-  (let ((result (gaffer--call default-directory "git" args
-                              (gaffer--call-deadline "git" args))))
+  (let ((result (gaffer-call default-directory "git" args)))
     (cons (car result) (string-trim (cdr result)))))
 
 (defun dag/release--git! (&rest args)
