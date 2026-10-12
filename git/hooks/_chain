@@ -111,6 +111,13 @@ if [ "$hook" = "post-rewrite" ]; then
   fi
 fi
 
+# 0b) pre-push: git names the refs being pushed on stdin, and the scrub below
+#     needs them. Read them once and hand the same lines to the repo-local hook.
+push_refs=""
+if [ "$hook" = "pre-push" ]; then
+  push_refs="$(cat || true)"
+fi
+
 # 1) Chain to the repo-local hook of the same name, if present and not ourselves.
 #
 # TWO git dirs, not one.  Inside a linked worktree `--absolute-git-dir` returns
@@ -137,6 +144,9 @@ do
   ran_local="$local_hook"
   if [ "$hook" = "post-rewrite" ]; then
     "$local_hook" "$@" < <([ -z "$rewrites" ] || printf '%s\n' "$rewrites") \
+      || exit $?
+  elif [ "$hook" = "pre-push" ]; then
+    "$local_hook" "$@" < <([ -z "$push_refs" ] || printf '%s\n' "$push_refs") \
       || exit $?
   else
     "$local_hook" "$@" || exit $?
@@ -695,51 +705,182 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
     fi
 
 
+    # Both hooks hand one patch to `scrub_split', which files each added line
+    # under the name in its diff header. The name is only a label for the
+    # report and is never handed back to git as a path, so a name git quotes
+    # cannot make a file go unscanned.
+    #
+    # Every added line is scanned, except in a binary file. So is the name of
+    # each added, copied or renamed file, and pre-push scans each pushed
+    # commit's message as well. A rename is detected, so a file that only
+    # moves adds no lines and a hit it already carried is not charged to it
+    # again.
+
+    # scrub_split DIR reads a patch made with -U0 and writes each file's added
+    # lines to DIR/N, with DIR/index mapping each N to its name. The parse
+    # keeps state, because an added line that starts with `++' looks like a
+    # `+++' header. A header comes only before a file's first hunk.
+    scrub_split() {
+      LC_ALL=C awk -v dir="$1" '
+        /^diff --git / { inhunk = 0; cur = 0; next }
+        !inhunk && /^\+\+\+ / {
+          name = substr($0, 5); sub(/\t$/, "", name)
+          if (!(name in idx)) { idx[name] = ++n; label[n] = name }
+          cur = idx[name]; next
+        }
+        /^@@ / { inhunk = 1; next }
+        inhunk && /^\+/ { if (cur) line[cur, ++cnt[cur]] = substr($0, 2); next }
+        inhunk && /^[-\\]/ { next }
+        { inhunk = 0 }
+        END {
+          for (i = 1; i <= n; i++) {
+            if (!cnt[i]) continue
+            f = dir "/" i
+            for (j = 1; j <= cnt[i]; j++) print line[i, j] > f
+            close(f)
+            print i "\t" label[i] >> (dir "/index")
+          }
+        }'
+    }
+
+    # scrub_hits TEXT prints the hits in TEXT, one per line. Two passes, and
+    # the case sensitivity is the point. Shape rules are case-sensitive:
+    # matched with -i, the Jira-key rule fires on any lowercase hyphen-digits
+    # string ("abc-1234"), which is everywhere. Literal terms are
+    # case-insensitive, since a name is a name however it is capitalised.
+    # The trailing `true' matters under `set -e'. With no term list
+    # `scrub_re' is empty, the `if' is the group's last command, and a group
+    # ending in a false test makes the whole substitution non-zero. That
+    # aborts the commit silently, with no message to say why.
+    # Shapes go through the shared `scrub_shape_hits', not a copy of its
+    # pipeline. The rules consume a boundary character now that they no
+    # longer lean on `\b' (which `git grep -E' ignores on macOS), and that
+    # helper trims it back off, so the reported hits stay the bare tokens
+    # they have always been.
+    scrub_hits() {
+      { printf '%s\n' "$1" | scrub_shape_hits || true
+        if [ -n "$scrub_re" ]; then
+          printf '%s\n' "$1" | grep -aoiE "$scrub_re" 2>/dev/null || true
+        fi
+        true
+      } | sort -u
+    }
+
+    scan_dir="$(mktemp -d)"
+    trap 'rm -rf "$scan_dir"' EXIT
+    : > "$scan_dir/index"
+    : > "$scan_dir/names"
+    : > "$scan_dir/msgs"
+    diff_opts=(-p -U0 --no-color --no-ext-diff --no-textconv --no-prefix -M
+               --diff-filter=ACMRT)
+    name_opts=(-z --name-only -M --diff-filter=ACR)
+
     if [ "$hook" = "pre-commit" ]; then
-      changed="$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null)"
-      added_of() { git diff --cached -U0 --diff-filter=ACM -- "$1" 2>/dev/null \
-                     | grep -a '^+' | grep -av '^+++' || true; }
+      if ! git diff --cached "${diff_opts[@]}" 2>/dev/null | scrub_split "$scan_dir" ||
+         ! git diff --cached "${name_opts[@]}" > "$scan_dir/names" 2>/dev/null; then
+        echo "scrub: cannot read the staged changes, so refusing." >&2
+        exit 1
+      fi
     else
-      # pre-push: everything this push would publish that the remote lacks
-      remote_head="$(git rev-parse --verify -q "@{u}" 2>/dev/null || true)"
-      range="${remote_head:+$remote_head..}HEAD"
-      changed="$(git diff --name-only --diff-filter=ACM "$range" 2>/dev/null)"
-      added_of() { git diff -U0 --diff-filter=ACM "$range" -- "$1" 2>/dev/null \
-                     | grep -a '^+' | grep -av '^+++' || true; }
+      # pre-push: every commit this push would publish, taken from the ref
+      # lines git hands the hook rather than from HEAD and its upstream. That
+      # covers a ref that is not checked out and a new branch, which has no
+      # upstream yet. Each commit is scanned, not the net diff, because the
+      # push publishes the history and a hit removed again later is still in
+      # it.
+      #
+      # A commit is skipped when this clone knows the remote has it: reachable
+      # from the remote's side of a pushed ref, when that commit is here, or
+      # from one of its remote-tracking refs. A push to a bare URL has no
+      # tracking refs, so it scans more. That is the safe direction.
+      #
+      # A merge commit is scanned for what its resolution changed, so a hit
+      # added while resolving it is caught. git skips that for an octopus
+      # merge and says so only on stderr, so a second pass diffs each octopus
+      # against its first parent. It scans more than the resolution, which is
+      # the safe direction.
+      zero=0000000000000000000000000000000000000000
+      push_revs=()
+      while read -r _ lsha _ rsha; do
+        [ "${lsha:-$zero}" != "$zero" ] || continue
+        push_revs+=("$lsha")
+        if [ "$rsha" != "$zero" ] && git cat-file -e "$rsha^{commit}" 2>/dev/null; then
+          push_revs+=("^$rsha")
+        fi
+      done < <(printf '%s\n' "$push_refs")
+      if [ "${#push_revs[@]}" -gt 0 ]; then
+        push_revs+=(--not "--remotes=${1:-origin}")
+        # The cap bounds how long one push can hold the terminal. A push over
+        # it is usually a whole history going to a new remote, and stopping
+        # to ask is better than stalling with no word. A repo that pushes
+        # long histories as a matter of course raises it for itself.
+        max_commits=1000
+        if ! max_commits="$(git config --type=int --default "$max_commits" \
+                              --get scrub.pushMaxCommits 2>/dev/null)"; then
+          echo "scrub: scrub.pushMaxCommits is not a number, so refusing." >&2
+          exit 1
+        fi
+        if ! n_commits="$(git rev-list --count "${push_revs[@]}" 2>/dev/null)"; then
+          echo "scrub: cannot list the commits being pushed, so refusing." >&2
+          exit 1
+        fi
+        if [ "$n_commits" -gt "$max_commits" ]; then
+          echo "scrub: this push has $n_commits commits, over the cap of $max_commits, so refusing." >&2
+          echo "scrub: to scan them all, raise the cap for this repo:" >&2
+          echo "scrub:   git config scrub.pushMaxCommits $n_commits" >&2
+          exit 1
+        fi
+        octopus=(--min-parents=3 --diff-merges=first-parent)
+        if ! { git log --format= --root --remerge-diff "${diff_opts[@]}" \
+                 "${push_revs[@]}" -- &&
+               git log --format= --root "${octopus[@]}" "${diff_opts[@]}" \
+                 "${push_revs[@]}" --; } 2>/dev/null | scrub_split "$scan_dir" ||
+           ! { git log --format= --root --remerge-diff "${name_opts[@]}" \
+                 "${push_revs[@]}" -- &&
+               git log --format= --root "${octopus[@]}" "${name_opts[@]}" \
+                 "${push_revs[@]}" --; } > "$scan_dir/names" 2>/dev/null ||
+           ! git log -z --format='%h%n%B' "${push_revs[@]}" -- \
+               > "$scan_dir/msgs" 2>/dev/null; then
+          echo "scrub: cannot read the commits being pushed, so refusing." >&2
+          exit 1
+        fi
+      fi
     fi
 
     scrub_fail=0
-    while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      added="$(added_of "$f")"
+
+    # A file name is reported by count only, and once any name is a hit no
+    # name is printed, so the report does not repeat the name being refused.
+    name_hits="$(scrub_hits "$(tr '\0' '\n' < "$scan_dir/names")")"
+    if [ -n "$name_hits" ]; then
+      scrub_fail=1
+      echo "scrub: $(printf '%s\n' "$name_hits" | wc -l | tr -d ' ') hit(s) in the names of added files" >&2
+    fi
+
+    while IFS="$(printf '\t')" read -r i f; do
+      added="$(cat "$scan_dir/$i")"
       [ -n "$added" ] || continue
-      # Two passes, and the case sensitivity is the point.  Shape rules are
-      # case-SENSITIVE: matched with -i, the Jira-key rule fires on any
-      # lowercase hyphen-digits string ("abc-1234"), which is everywhere.
-      # Literal terms are case-INSENSITIVE, since a name is a name however it
-      # is capitalised.
-      # The trailing `true' is load-bearing under `set -e': with no term list
-      # `scrub_re' is empty, the `if' is the group's last command, and a group
-      # ending in a false test makes the whole substitution non-zero, which
-      # aborts the commit -- silently, since the warning above looks like the
-      # only thing that happened.
-      # Shapes go through the shared `scrub_shape_hits', not a copy of its
-      # pipeline.  The rules consume a boundary character now that they no
-      # longer lean on `\b' (which `git grep -E' ignores on macOS), and that
-      # helper trims it back off, so the reported hits stay the bare tokens
-      # they have always been.
-      hits="$( { printf '%s\n' "$added" | scrub_shape_hits || true
-                 if [ -n "$scrub_re" ]; then
-                   printf '%s\n' "$added" | grep -aoiE "$scrub_re" 2>/dev/null || true
-                 fi
-                 true
-               } | sort -u )"
+      hits="$(scrub_hits "$added")"
       if [ -n "$hits" ]; then
         scrub_fail=1
-        echo "scrub: employer information in $f" >&2
+        if [ -n "$name_hits" ]; then
+          echo "scrub: employer information in a file" >&2
+        else
+          echo "scrub: employer information in $f" >&2
+        fi
         printf '%s\n' "$hits" | sed 's/^/  /' >&2
       fi
-    done < <(printf '%s\n' "$changed")
+    done < "$scan_dir/index"
+
+    # A message is reported by its commit alone. The hit is not printed,
+    # because the fix is to reword that commit, and the sha is enough to
+    # find it.
+    while IFS= read -r -d '' rec || [ -n "$rec" ]; do
+      if [ -n "$(scrub_hits "${rec#*$'\n'}")" ]; then
+        scrub_fail=1
+        echo "scrub: employer information in the message of commit ${rec%%$'\n'*}" >&2
+      fi
+    done < "$scan_dir/msgs"
 
     if [ "$scrub_fail" -ne 0 ]; then
       echo "scrub: refusing -- this is a personal repo." >&2
