@@ -138,6 +138,13 @@ check_term "a term INSIDE a longer word is not caught"  0 "the acorns fell"
 check_term "a term with a prefix is not caught"         0 "an unacorn thing"
 check_term "another term standing alone is caught"      1 "ask alice about it"
 check_term "that term inside a word is not caught"      0 "the alices gathered"
+# `_' and a digit separate a term from the rest of an identifier. A letter
+# still makes it part of a longer word.
+check_term "a term opening an identifier is caught"     1 "export ACORN_HOST=x"
+check_term "a term closing an identifier is caught"     1 "MY_ACORN=1"
+check_term "a term beside a digit is caught"            1 "built on acorn2 today"
+check_term "a term as a path segment is caught"         1 "see test/Gen/ACORN/foo.ll"
+check_term "a longer word in an identifier is not caught" 0 "MY_ACORNS=1"
 # A term whose edges are punctuation keeps matching mid-path.  Wrapping it in
 # \b would demand a word character before the leading slash and break this --
 # failing OPEN, which is why the boundary is conditional.
@@ -160,6 +167,26 @@ check_term "a term containing + is not expanded"       0 "the aab case"
 check_term "a legacy \\b-anchored term catches the bare word" 1 "a badger here"
 check_term "its stripped anchor still bounds the term"        0 "the badgers ran"
 check_term "it no longer matches its own written spelling"    0 'x \bbadger\b y'
+
+# check_hits DESCRIPTION EXPECTED INPUT asserts the hits `scrub_term_hits'
+# prints for INPUT, joined with `,'.
+check_hits() {
+  local desc="$1" expected="$2" input="$3" got
+  got="$(printf '%s\n' "$input" | scrub_term_hits "$terms" | sort -u | paste -sd, -)"
+  if [ "$got" = "$expected" ]; then
+    printf 'ok    %s\n' "$desc"
+    pass=$((pass + 1))
+  else
+    printf 'FAIL  %s\n      expected %s, got %s\n' "$desc" "$expected" "$got" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+# A hit is the term as spelled in the text, excluding the neighbor its
+# boundary consumed, so each term is listed once.
+check_hits "a hit drops the neighbour it consumed" "ACORN" "ACORN_HOST=1 ACORN=2"
+check_hits "a punctuation-edged hit keeps its edges" "/fake/" "lives in /fake/here"
+check_hits "a hit in a path drops the slashes" "ACORN" "see test/Gen/ACORN/foo.ll"
 
 # A list of only comments and blank lines is refused, and the refusal names
 # the file. Read as an empty list, it would pass every employer name.

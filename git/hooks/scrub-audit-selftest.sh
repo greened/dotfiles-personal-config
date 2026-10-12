@@ -19,7 +19,7 @@ root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
 
 key="$(printf 'ZZZ')-9999"
-printf 'zqxjv\n' > "$root/terms"
+printf 'zqxjv\nqwvbn\n/zqxjv/\n' > "$root/terms"
 printf '[scrub]\n\ttermsFile = %s\n' "$root/terms" > "$root/gitconfig"
 export GIT_CONFIG_GLOBAL="$root/gitconfig"
 
@@ -32,8 +32,8 @@ new_repo() {
         -c core.hooksPath=/dev/null commit -q -m a
 }
 
-new_repo "$root/public" "ship it to zqxjv, see $key"
-new_repo "$root/private" "nothing to see"
+new_repo "$root/public" "ship it to zqxjv qwvbn, see $key"
+new_repo "$root/private" "$(printf 'ZQXJV_HOST=1\nin /zqxjv/ here')"
 # A repo with only binary content yields no text, which must not read as clean.
 new_repo "$root/binary" "x"
 printf '\0\1\2' > "$root/binary/a.txt"
@@ -68,6 +68,12 @@ check() {
 }
 
 check "a committed term is live in public" '^1 +zqxjv .*LIVE-IN-PUBLIC'
+# The private hit consumes the `_' its regex matched, and still counts. The
+# `/zqxjv/' hit there is not also credited to `zqxjv'.
+check "a term in an identifier is counted" '^1 +zqxjv +5 +1 +1 +1 '
+check "a term one space after another is counted" '^2 +qwvbn +5 +1 +0 +1 '
+check "a punctuation-edged hit is credited to its own term" \
+      '^3 +/zqxjv/ +7 +0 +1 +0 '
 check "a committed shape is counted in public" "^public +1 +$key\$"
 check "a clean repo has no shape hits" '^private +0 *$'
 

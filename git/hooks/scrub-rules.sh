@@ -26,16 +26,19 @@
 # term collided with fifteen dictionary words here -- and refusing a commit over
 # innocent prose is how a check teaches people to bypass it.
 #
-# The conditional part is not fussiness.  `\b' asserts a word/non-word
-# transition, so wrapping a term that already begins with punctuation demands a
-# word character BEFORE that punctuation: a `/path/' term would stop matching
-# "in /path/here" altogether.  That fails OPEN, which is worse than the false
-# positives it was meant to fix.  Five of the terms here begin or end with
-# punctuation, and their punctuation already delimits them.
-#
-# `\b' works in GNU grep and in the BSD grep macOS ships (2.6.0-FreeBSD,
-# GNU-compatible), both verified.  `[[:<:]]' is BSD-only, so it is not used.
-# The `sed' caveat elsewhere in these rules does not apply: this is grep.
+# The boundary is not `\b', because `_' and digits are word characters, and a
+# term at the start of an env var name would have no `\b' after it. So `_'
+# always separates, and so does a digit beside a letter edge. A letter always
+# joins the term to a longer word, as does a digit beside a digit or `_' edge.
+# The boundaries are explicit classes, like the shape rules below, so they
+# consume the neighbour and a `grep -o' hit carries it. The conditional part
+# matters because wrapping a term that already begins with punctuation would
+# demand a non-letter before that punctuation, so a `/path/' term would stop
+# matching "in src/path/here". That fails open, worse than the false positives
+# it was meant to fix. A term that begins or ends with punctuation is already
+# delimited by it. The classes are plain POSIX ERE, so every grep reads them
+# the same way, including `git grep -E' on macOS, where a `\b' pattern matched
+# nothing.
 #
 # Each term is also ESCAPED to a literal.  The list is a list of names, but it
 # was being handed to `grep -E' as a pattern, so any term containing a regex
@@ -61,22 +64,58 @@
 # A list with no terms, only comments and blank lines, is refused with a message
 # that names the file. Treating it as an empty list would let a truncated
 # deploy pass every employer name.
+#
+# `scrub_term_re' and `scrub_term_hits' both read the list through
+# `scrub_terms', so the hit trimmer sees the terms the regex was built from.
+scrub_terms() {   # FILE -> one cleaned term per line
+  sed -e 's/#.*$//' -e 's/[[:space:]]*$//' "$1" \
+    | { grep -v '^[[:space:]]*$' || true; } \
+    | sed -e 's/^\\b//' -e 's/\\b$//' \
+    | { grep -v '^$' || true; }
+}
+
 scrub_term_re() {
   local re
-  re="$(sed -e 's/#.*$//' -e 's/[[:space:]]*$//' "$1" \
-    | { grep -v '^[[:space:]]*$' || true; } \
+  re="$(scrub_terms "$1" \
     | awk '{ raw = $0
-             sub(/^\\b/, "", raw); sub(/\\b$/, "", raw)
              t = raw
              gsub(/[][(){}.^$*+?|\\]/, "\\\\&", t)
-             if (raw ~ /^[A-Za-z0-9_]/) t = "\\b" t
-             if (raw ~ /[A-Za-z0-9_]$/) t = t "\\b"
+             if (raw ~ /^[A-Za-z]/) t = "(^|[^A-Za-z])" t
+             else if (raw ~ /^[0-9_]/) t = "(^|[^A-Za-z0-9])" t
+             if (raw ~ /[A-Za-z]$/) t = t "([^A-Za-z]|$)"
+             else if (raw ~ /[0-9_]$/) t = t "([^A-Za-z0-9]|$)"
              printf "%s%s", sep, t; sep = "|" }')"
   if [ -z "$re" ]; then
     echo "scrub: refusing, because $1 holds no terms." >&2
     return 1
   fi
   printf '%s' "$re"
+}
+
+# Print the term hits in stdin, one matched term per line, as the text spells
+# it. FILE is the term list. Prefer this to `grep -oE "$(scrub_term_re
+# FILE)"` directly: a raw hit can carry the neighbor its boundary consumed,
+# and that neighbor can be punctuation that also begins a term such as
+# `/fake/`. Only the term list distinguishes the two, so each hit is cut down
+# to the longest term it holds. A second term one character after a hit is
+# not listed, because `grep -o' has consumed that character.
+scrub_term_hits() {   # FILE, stdin -> matched terms, one per line
+  local re
+  re="$(scrub_term_re "$1")" || return 1
+  grep -aoiE "$re" 2>/dev/null \
+    | SCRUB_TERMS="$(scrub_terms "$1")" awk '
+        BEGIN { n = split(ENVIRON["SCRUB_TERMS"], term, "\n")
+                for (i = 1; i <= n; i++) term[i] = tolower(term[i]) }
+        { h = tolower($0); best = 0; at = 0
+          for (i = 1; i <= n; i++) {
+            l = length(term[i])
+            if (l <= best) continue
+            for (off = 0; off <= 1; off++)
+              if (substr(h, off + 1, l) == term[i] && length(h) - off - l <= 1) {
+                best = l; at = off + 1; break
+              }
+          }
+          print (best ? substr($0, at, best) : $0) }'
 }
 
 # A shape rule is case-SENSITIVE on purpose.  Matched case-insensitively, the
@@ -99,8 +138,8 @@ scrub_term_re() {
 # path this is not a fix for a live hole.  It removes the dependency on which
 # engine happens to read the rules, so the next consumer cannot inherit the trap.
 #
-# `scrub_term_re' emits `\b', so its consumers match in the system grep.
-# `scrub-audit.sh' lets git list the text and greps it there.
+# `scrub-audit.sh' has git list the text, then matches it with the system `sed'
+# and `grep'.
 #
 # Explicit boundaries CONSUME a character, unlike `\b'.  Harmless for detection
 # and for `grep -c', and `grep -o' output gains a boundary character.

@@ -112,13 +112,11 @@ else
   done
 fi
 
-# dump REPO... prints the committed text of those repos. scan REGEX FILE prints
-# every substring of that text that matches, one a line.
+# dump REPO... prints the committed text of those repos.
 #
 # One recursive pass per repo SET, not one per term: two dozen terms across a
 # dozen checkouts is minutes of grep for data a single pass yields, and the
-# per-term counts below come out of these lists instead.  Terms are literal, so
-# a matched substring IS the term that matched it.
+# per-term counts below come out of these dumps instead.
 #
 # COMMITTED content, via `git grep HEAD' -- not the working tree.  Two reasons,
 # and the first cost an afternoon:
@@ -138,9 +136,7 @@ fi
 # A path that is not a git repo falls back to a plain recursive grep, with the
 # transient names excluded.
 #
-# git only lists the committed lines, and the system grep matches them, as it
-# does in `_chain'. `git grep -E' on macOS does not honour the `\b' that
-# `scrub_term_re' emits, so matching there missed every term that carries one.
+# git only lists the committed lines. The system `sed' and `grep' match them.
 #
 # `^' matches every line in every grep. An empty pattern is not portable, and
 # a grep that rejects it would leave an empty dump that reads as clean. So a
@@ -164,8 +160,32 @@ dump() {
   done
 }
 
-scan() {
-  grep -aoiE -- "$1" "$2" 2>/dev/null || true
+# take REGEX FILE replaces every match of REGEX in FILE with a space, and
+# prints how many it replaced. FILE is lowercased text, and REGEX is built from
+# a lowercased term.
+#
+# A term's boundary consumes its neighbor, so a single `grep -o' pass cannot
+# start the next match on that neighbor, and a term one space after another
+# would count 0. sed replaces one match at a time and goes round again, and the
+# space it leaves still separates the next match.
+#
+# Counting longest term first, out of text the longer terms have already been
+# taken from, credits a hit to the term that produced it. A `/path/' term holds
+# a bare word, and crediting both would invent hits for the bare one.
+#
+# The delimiter and marker are control bytes, which `lower' strips from the
+# text. A term holding one would break the sed expression.
+take() {
+  local d=$'\001' m=$'\002' n
+  LC_ALL=C sed -E -e ':a' -e "s$d$1$d $m $d" -e 'ta' "$2" > "$2.hit"
+  n=$(LC_ALL=C tr -cd "$m" < "$2.hit" | wc -c)
+  LC_ALL=C tr "$m" ' ' < "$2.hit" > "$2"
+  echo $((n))
+}
+
+# lower FILE prints FILE lowercased, without the bytes `take' relies on.
+lower() {
+  LC_ALL=C tr -d '\001\002' < "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'
 }
 
 # shapes LABEL FILE prints one summary row for the shape rules over that text.
@@ -183,7 +203,7 @@ shapes() {
 }
 
 report() {
-  local full pub_hits priv_hits prose_hits r
+  local full r n lt lre
   full="$(scrub_term_re "$terms_file")" || exit 1
   # Name the inputs.  A count with no stated scope cannot be checked, and two
   # rounds of chasing a wrong number here came down to not knowing which trees
@@ -198,9 +218,29 @@ report() {
   dump $PUBLIC  > "$texts/public"
   dump $PRIVATE > "$texts/private"
   dump $PROSE   > "$texts/prose"
-  pub_hits="$(scan "$full" "$texts/public")"
-  priv_hits="$(scan "$full" "$texts/private")"
-  prose_hits="$(scan "$full" "$texts/prose")"
+  lower "$texts/public"  > "$texts/public.lc"
+  lower "$texts/private" > "$texts/private.lc"
+  lower "$texts/prose"   > "$texts/prose.lc"
+
+  # Per-term counts from the same parse the rows use. An inert term has
+  # no regex and counts nothing.
+  n=0
+  while IFS= read -r raw; do
+    t="${raw%%#*}"; t="$(printf '%s' "$t" | sed 's/[[:space:]]*$//')"
+    [ -z "$t" ] && continue
+    n=$((n + 1))
+    printf '%s\t%s\t%s\n' "${#t}" "$n" "$t"
+  done < "$terms_file" > "$texts/order"
+  pub_n=() priv_n=() prose_n=()
+  while IFS=$'\t' read -r _ n lt; do
+    pub_n[n]=0 priv_n[n]=0 prose_n[n]=0
+    lt="$(printf '%s\n' "$lt" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+    lre="$(printf '%s\n' "$lt" | scrub_term_re /dev/stdin 2>/dev/null)" || continue
+    pub_n[n]=$(take "$lre" "$texts/public.lc")
+    priv_n[n]=$(take "$lre" "$texts/private.lc")
+    prose_n[n]=$(take "$lre" "$texts/prose.lc")
+  done < <(sort -t "$(printf '\t')" -k1,1nr -k2,2n "$texts/order")
+
   printf '%-4s %-30s %-5s %-9s %-8s %-7s %-11s %s\n' \
          '#' 'term' 'len' 'inPublic' 'private' 'myProse' 'dictHint' 'flags'
   i=0
@@ -214,24 +254,8 @@ report() {
     # A term that is only a legacy `\b' builds to nothing, and is inert.
     one="$(printf '%s\n' "$t" | scrub_term_re /dev/stdin 2>/dev/null)" || one=''
 
-    # Counted out of the pre-scanned match lists, by WHOLE-LINE literal
-    # equality.  Each line of those lists is one matched substring, which for a
-    # bounded literal term is the term itself, so equality is exact.
-    #
-    # Matching the term's REGEX against those lines instead is wrong, and wrong
-    # in the direction that invents findings: terms overlap, so a substring
-    # matched on account of one term can contain another as a word -- a domain
-    # or a path prefix containing the bare company name, say -- and every such
-    # line got credited to both. That read as 177 hits for a term with none,
-    # and sent one triage after six terms that cost nothing.
-    #
-    # A term that matches nothing is the interesting case, and grep exits 1 to
-    # say so, which under `pipefail' would abort the audit at the first such
-    # term -- reporting a clean-looking header and no rows at all.
-    pub=$({ printf '%s\n' "$pub_hits" | grep -icxF -- "$t" || true; })
-    priv=$({ printf '%s\n' "$priv_hits" | grep -icxF -- "$t" || true; })
-    # Where a false positive would actually cost something.
-    prose=$({ printf '%s\n' "$prose_hits" | grep -icxF -- "$t" || true; })
+    # The prose count is where a false positive would actually cost something.
+    pub="${pub_n[i]}" priv="${priv_n[i]}" prose="${prose_n[i]}"
 
     # A HINT only, and the matched words are named rather than counted, because
     # a bare count sent one triage after six terms that turned out to cost

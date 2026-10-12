@@ -808,15 +808,15 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
     # `scrub_re' is empty, the `if' is the group's last command, and a group
     # ending in a false test makes the whole substitution non-zero. That
     # aborts the commit silently, with no message to say why.
-    # Shapes go through the shared `scrub_shape_hits', not a copy of its
-    # pipeline. The rules consume a boundary character now that they no
-    # longer lean on `\b' (which `git grep -E' ignores on macOS), and that
-    # helper trims it back off, so the reported hits stay the bare tokens
-    # they have always been.
+    # Shapes and terms go through the shared `scrub_shape_hits' and
+    # `scrub_term_hits', not copies of their pipelines. The rules consume a
+    # boundary character, and those helpers trim it back off, so the
+    # reported hits are the bare tokens and `sort -u' lists each spelling
+    # once.
     scrub_hits() {
       { printf '%s\n' "$1" | scrub_shape_hits || true
         if [ -n "$scrub_re" ]; then
-          printf '%s\n' "$1" | grep -aoiE "$scrub_re" 2>/dev/null || true
+          printf '%s\n' "$1" | scrub_term_hits "$terms_file" || true
         fi
         true
       } | sort -u
