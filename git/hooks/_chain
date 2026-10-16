@@ -118,6 +118,21 @@ if [ "$hook" = "pre-push" ]; then
   push_refs="$(cat || true)"
 fi
 
+# 0c) reference-transaction: the commit gate and the repo-local hook both read
+#     the ref lines. Buffer them once, byte for byte, and replay them to each.
+reftxn_in=""
+if [ "$hook" = "reference-transaction" ]; then
+  reftxn_in="$(cat || true; echo x)"
+  reftxn_in="${reftxn_in%x}"
+fi
+
+# 0d) commit-msg: keep the message as git handed it over, so the commit gate
+#     can tell whether the repo-local hook rewrote it.
+msg_before=""
+if [ "$hook" = "commit-msg" ]; then
+  msg_before="$(cat "$1" 2>/dev/null || true)"
+fi
+
 # 1) Chain to the repo-local hook of the same name, if present and not ourselves.
 #
 # TWO git dirs, not one.  Inside a linked worktree `--absolute-git-dir` returns
@@ -148,10 +163,34 @@ do
   elif [ "$hook" = "pre-push" ]; then
     "$local_hook" "$@" < <([ -z "$push_refs" ] || printf '%s\n' "$push_refs") \
       || exit $?
+  elif [ "$hook" = "reference-transaction" ]; then
+    # git ignores the status outside `prepared', and the gate below must
+    # still clean up its records then.
+    rc=0
+    "$local_hook" "$@" < <(printf '%s' "$reftxn_in") || rc=$?
+    [ "$rc" = 0 ] || [ "${1:-}" != prepared ] || exit "$rc"
   else
     "$local_hook" "$@" || exit $?
   fi
 done
+
+# 1a) The commit-time gate. Its rules and their reasons are in commit-gate.sh.
+#     A Claude caller is refused when the file is missing, since the gate
+#     would otherwise pass everything.
+case "$hook" in
+  reference-transaction|prepare-commit-msg|commit-msg|pre-push|post-checkout)
+    gate="${BASH_SOURCE%/*}/commit-gate.sh"
+    if [ -r "$gate" ]; then
+      # shellcheck source=commit-gate.sh
+      . "$gate"
+      commitgate_dispatch "$hook" "$reftxn_in$push_refs$msg_before" "$@" || exit 1
+    elif [ -n "${CLAUDECODE+x}${CLAUDE_CODE_SESSION_ID+x}" ] &&
+         [ "$hook" != post-checkout ]; then
+      echo "commit-gate: cannot read $gate, so refusing." >&2
+      exit 1
+    fi
+    ;;
+esac
 
 # 1b) post-checkout: remind that a NEW WORKTREE still has to be wired into the
 #     memory system.  `git be wt add` cannot be covered here -- it goes through
@@ -247,8 +286,18 @@ if [ "$hook" = "commit-msg" ]; then
     # Drop AI co-author/assisted-by lines only (keep human co-authors).
     grep -viE '^(co-authored-by|assisted-by):[[:space:]].*(claude|anthropic)' "$msg" > "$tmp" || true
     # Remove any blank lines left dangling at the end.
-    awk '{a[NR]=$0} END{n=NR; while(n>0 && a[n] ~ /^[[:space:]]*$/) n--; for(i=1;i<=n;i++) print a[i]}' "$tmp" > "$msg"
-    rm -f "$tmp"
+    awk '{a[NR]=$0} END{n=NR; while(n>0 && a[n] ~ /^[[:space:]]*$/) n--; for(i=1;i<=n;i++) print a[i]}' "$tmp" > "$tmp.new"
+    # The commit gate refuses this rewrite for a Claude commit it guards,
+    # since the record binds the message as approved.
+    if declare -F commitgate_keep_msg >/dev/null &&
+       ! commitgate_keep_msg "$(cat "$msg")" "$tmp.new" \
+           "the message carries an AI trailer this repo does not take" \
+           "Remove the trailer from the message, then run commit-land again."; then
+      rm -f "$tmp" "$tmp.new"
+      exit 1
+    fi
+    cat "$tmp.new" > "$msg"
+    rm -f "$tmp" "$tmp.new"
   fi
 fi
 
@@ -482,6 +531,13 @@ if [ "$hook" = "pre-commit" ]; then
 
     if [ "$fmt_touched" -gt 0 ]; then
       echo "format: reformatted staged lines in $fmt_touched file(s)." >&2
+      # commit-gate.sh is not sourced in pre-commit, so this is its Claude
+      # test written out, as in 1a.
+      if [ -n "${CLAUDECODE+x}${CLAUDE_CODE_SESSION_ID+x}" ]; then
+        echo "format: that changed the tree commit-land approved, so the commit-time" >&2
+        echo "format: gate will not find it approved.  Format before staging (the" >&2
+        echo "format: commit agent's step 3b), then land again." >&2
+      fi
       if [ "$fmt_split" -gt 0 ]; then
         echo "format: $fmt_split of them also had UNSTAGED edits, so only the" >&2
         echo "format: commit was formatted -- the file on disk was left alone." >&2

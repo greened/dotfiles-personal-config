@@ -30,6 +30,10 @@ do_test() {
   local cf="${CLANG_FORMAT:-$(command -v clang-format || true)}"
   # A backstop for any selftest that forgets to keep the real git config out.
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+  # Run from a Claude session, the commit gate would judge every fixture
+  # commit. Only commit-gate-selftest.sh is about the gate, and it sets the
+  # caller itself.
+  unset CLAUDECODE CLAUDE_CODE_SESSION_ID
   for t in "$here"/git/hooks/*-selftest.sh; do
     [ -e "$t" ] || continue
     echo "== test: $(basename "$t")"
