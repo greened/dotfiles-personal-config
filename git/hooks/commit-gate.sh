@@ -772,8 +772,12 @@ cg_judge() {
     cg_why="a published remote-tracking ref already has it"
     return 0
   fi
-  if [ "$real" = none ] && cg_reachable "$new" --branches; then
-    cg_why="a new branch at content another branch has"
+  # Content already on a local branch passed this gate or came from David, so
+  # moving or making a branch there brings in nothing new. `--branches' reads
+  # every ref at its old value, so no update in this transaction can vouch for
+  # another.
+  if cg_reachable "$new" --branches; then
+    cg_why="a local branch already has it"
     return 0
   fi
   cg_why="$ref would move to ${new:0:12}, and no commit or move record approves it"

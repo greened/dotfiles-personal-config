@@ -672,8 +672,9 @@ run "detaching at the branch passes" pass "$r" claude git checkout -q --detach t
 run "the picks of a live rebase-land operation pass" pass "$r" op_rebase "$op_nonce"
 new="$(tip "$r")"
 rec_move "$r" refs/heads/topic "$old" "$new"
+other="$(git -C "$r" commit-tree "$(tip "$r" 'HEAD^{tree}')" -p "$new" -m other)"
 run "a move record does not approve a different new tip" refuse "$r" \
-    claude git update-ref refs/heads/topic "$onto" "$old"
+    claude git update-ref refs/heads/topic "$other" "$old"
 run "a move record passes the exact update-ref" pass "$r" \
     claude git update-ref refs/heads/topic "$new" "$old"
 is "the committed state deletes the move record" [ ! -e "$last_rec" ]
@@ -731,6 +732,17 @@ run "branch -f to unpublished content is refused" refuse "$r" \
     claude git branch -f made "$dangling"
 run "a fast-forward to a local branch's new commit is refused" refuse "$r" \
     claude git update-ref refs/heads/made2 "$dangling"
+git -C "$r" branch side
+git -C "$r" checkout -q side
+stage "$r" c.txt c; git -C "$r" commit -q -m c
+git -C "$r" checkout -q made2
+run "a fast-forward to another local branch's commit passes" pass "$r" \
+    claude git merge -q --ff-only side
+run "branch -f to another local branch's commit passes" pass "$r" \
+    claude git branch -f made side
+run "one transaction cannot vouch for its own new content" refuse "$r" \
+    claude git update-ref --stdin <<< "create refs/heads/made4 $dangling
+update refs/heads/made $dangling"
 run "deleting a branch passes" pass "$r" claude git branch -q -D made
 run "a tag on unpublished content is not judged" pass "$r" claude git tag t1 "$dangling"
 run "a note is not judged" pass "$r" claude git notes add -m note HEAD
