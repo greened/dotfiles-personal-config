@@ -93,29 +93,41 @@ scrub_term_re() {
 }
 
 # Print the term hits in stdin, one matched term per line, as the text spells
-# it. FILE is the term list. Prefer this to `grep -oE "$(scrub_term_re
-# FILE)"` directly: a raw hit can carry the neighbor its boundary consumed,
-# and that neighbor can be punctuation that also begins a term such as
-# `/fake/`. Only the term list distinguishes the two, so each hit is cut down
-# to the longest term it holds. A second term one character after a hit is
-# not listed, because `grep -o' has consumed that character.
+# it. FILE is the term list. It applies scrub_term_re's boundary rules at
+# each position without consuming the boundary, so two adjacent terms are
+# both listed, which `grep -o' cannot do. At one position the longest term
+# wins, and the scan resumes after it.
 scrub_term_hits() {   # FILE, stdin -> matched terms, one per line
-  local re
-  re="$(scrub_term_re "$1")" || return 1
-  grep -aoiE "$re" 2>/dev/null \
-    | SCRUB_TERMS="$(scrub_terms "$1")" awk '
-        BEGIN { n = split(ENVIRON["SCRUB_TERMS"], term, "\n")
-                for (i = 1; i <= n; i++) term[i] = tolower(term[i]) }
-        { h = tolower($0); best = 0; at = 0
-          for (i = 1; i <= n; i++) {
-            l = length(term[i])
-            if (l <= best) continue
-            for (off = 0; off <= 1; off++)
-              if (substr(h, off + 1, l) == term[i] && length(h) - off - l <= 1) {
-                best = l; at = off + 1; break
-              }
-          }
-          print (best ? substr($0, at, best) : $0) }'
+  local terms
+  terms="$(scrub_terms "$1")"
+  if [ -z "$terms" ]; then
+    echo "scrub: refusing, because $1 holds no terms." >&2
+    return 1
+  fi
+  SCRUB_TERMS="$terms" LC_ALL=C awk '
+    function alpha(c) { return c ~ /[A-Za-z]/ }
+    function alnum(c) { return c ~ /[A-Za-z0-9]/ }
+    function edge_ok(t, prev, nxt,   a, z) {
+      a = substr(t, 1, 1); z = substr(t, length(t), 1)
+      if (alpha(a) && alpha(prev)) return 0
+      if (a ~ /[0-9_]/ && alnum(prev)) return 0
+      if (alpha(z) && alpha(nxt)) return 0
+      if (z ~ /[0-9_]/ && alnum(nxt)) return 0
+      return 1
+    }
+    BEGIN { n = split(ENVIRON["SCRUB_TERMS"], term, "\n")
+            for (i = 1; i <= n; i++) term[i] = tolower(term[i]) }
+    { h = tolower($0); len = length(h); p = 1
+      while (p <= len) {
+        best = 0
+        for (i = 1; i <= n; i++) {
+          l = length(term[i])
+          if (l > best && substr(h, p, l) == term[i] &&
+              edge_ok(term[i], p > 1 ? substr(h, p - 1, 1) : "", substr(h, p + l, 1)))
+            best = l
+        }
+        if (best) { print substr($0, p, best); p += best } else p++
+      } }'
 }
 
 # A shape rule is case-SENSITIVE on purpose.  Matched case-insensitively, the

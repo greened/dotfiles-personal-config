@@ -810,9 +810,8 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
     # aborts the commit silently, with no message to say why.
     # Shapes and terms go through the shared `scrub_shape_hits' and
     # `scrub_term_hits', not copies of their pipelines. The rules consume a
-    # boundary character, and those helpers trim it back off, so the
-    # reported hits are the bare tokens and `sort -u' lists each spelling
-    # once.
+    # boundary character and those helpers report none, so the hits are the
+    # bare tokens and `sort -u' lists each spelling once.
     scrub_hits() {
       { printf '%s\n' "$1" | scrub_shape_hits || true
         if [ -n "$scrub_re" ]; then

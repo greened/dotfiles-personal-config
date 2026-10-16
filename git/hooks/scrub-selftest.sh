@@ -172,7 +172,7 @@ check_term "it no longer matches its own written spelling"    0 'x \bbadger\b y'
 # prints for INPUT, joined with `,'.
 check_hits() {
   local desc="$1" expected="$2" input="$3" got
-  got="$(printf '%s\n' "$input" | scrub_term_hits "$terms" | sort -u | paste -sd, -)"
+  got="$(printf '%s\n' "$input" | scrub_term_hits "$terms" | LC_ALL=C sort -u | paste -sd, -)"
   if [ "$got" = "$expected" ]; then
     printf 'ok    %s\n' "$desc"
     pass=$((pass + 1))
@@ -187,6 +187,9 @@ check_hits() {
 check_hits "a hit drops the neighbour it consumed" "ACORN" "ACORN_HOST=1 ACORN=2"
 check_hits "a punctuation-edged hit keeps its edges" "/fake/" "lives in /fake/here"
 check_hits "a hit in a path drops the slashes" "ACORN" "see test/Gen/ACORN/foo.ll"
+check_hits "two terms one character apart are both listed" "ACORN,alice" "ACORN alice"
+check_hits "a term beside a punctuation-edged one is listed" "/fake/,acorn" "/fake/acorn"
+check_hits "a term inside a word is not a hit" "" "acorns and malice"
 
 # A list of only comments and blank lines is refused, and the refusal names
 # the file. Read as an empty list, it would pass every employer name.
