@@ -46,9 +46,11 @@ cg_say() {
 }
 
 # Unset and malformed both read as enforce, so a typo cannot switch it off.
+# Global only, so a repo's own config cannot switch it off either. Git skips
+# includes when the scope is named, and the mode is set in an included file.
 cg_mode() {
   local m
-  m="$(git config --global --get commitgate.mode 2>/dev/null || true)"
+  m="$(git config --global --includes --get commitgate.mode 2>/dev/null || true)"
   case "$m" in
     off|warn|enforce) printf '%s' "$m" ;;
     *) printf enforce ;;

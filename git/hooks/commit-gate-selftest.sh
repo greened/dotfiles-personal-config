@@ -315,6 +315,18 @@ git config --global commitgate.mode enforce
 stage "$r" d.txt d
 run "mode enforce: refused" refuse "$r" claude git commit -q -m "add d"
 git config --global --unset commitgate.mode
+# The real global config sets the mode in ~/.gitconfig.local through an
+# include.
+git config --file "$root/gitconfig.local" commitgate.mode off
+git config --global include.path "$root/gitconfig.local"
+run "mode off in an included file: a Claude commit passes" pass "$r" \
+    claude git commit -q -m "add d"
+git config --global --unset include.path
+stage "$r" e.txt e
+git -C "$r" config commitgate.mode off
+run "mode off in the repo's own config: still refused" refuse "$r" \
+    claude git commit -q -m "add e"
+git -C "$r" config --unset commitgate.mode
 
 # --- Commit records --------------------------------------------------------
 
