@@ -85,7 +85,7 @@ git -C "$d" add b.cpp
 { ugly; printf 'int UNSTAGED_MARKER(void){return 0;}\n'; } > "$d/b.cpp"
 git -C "$d" -c format.clangFormatBin="$CF" commit -q -m two >/dev/null 2>&1
 committed="$(git -C "$d" show HEAD:b.cpp 2>/dev/null)"
-if printf '%s' "$committed" | grep -q UNSTAGED_MARKER; then
+if grep -q UNSTAGED_MARKER <<<"$committed"; then
   bad "2 unstaged hunk stays OUT of the commit" "the unstaged line was swept in"
 else
   ok "2 unstaged hunk stays OUT of the commit"
@@ -112,7 +112,7 @@ err="$(git -C "$d" -c format.clangFormatBin=/nonexistent/clang-format commit -m 
 rc=$?
 if [ "$rc" -eq 0 ]; then ok "3 a missing binary does not block the commit"
 else bad "3 a missing binary does not block the commit" "rc=$rc"; fi
-if printf '%s' "$err" | grep -q "not executable"; then
+if grep -q "not executable" <<<"$err"; then
   ok "3 a missing binary is announced"
 else
   bad "3 a missing binary is announced" "no warning in: $err"
@@ -133,7 +133,7 @@ d="$(newrepo)"
 ugly > "$d/d.cpp"
 git -C "$d" add d.cpp
 err="$(env -u TOOLCHAIN git -C "$d" commit -m four 2>&1)"
-if printf '%s' "$err" | grep -q '^format:'; then
+if grep -q '^format:' <<<"$err"; then
   bad "4 no toolchain is silent" "it spoke: $err"
 else
   ok "4 no toolchain is silent"

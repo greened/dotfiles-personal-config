@@ -88,7 +88,7 @@ check() {
         return
     fi
     if [ -n "$expected" ]; then
-        if printf '%s' "$out" | grep -qE "$expected"; then
+        if grep -qE "$expected" <<<"$out"; then
             pass=$((pass + 1))
         else
             echo "FAIL  $desc: expected stderr matching /$expected/, got:"

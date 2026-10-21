@@ -123,14 +123,14 @@ check "with no policy file the realm decides" kept "$root/nopolicy"
 new_repo "$root/broken" "git@github.com:acme-work/devtools.git" \
          dev@example.com "$broken"
 check "with a broken policy the realm decides" kept "$root/broken"
-if printf '%s\n' "$last_out" | grep -q 'cannot read the policy'; then
+if grep -q 'cannot read the policy' <<<"$last_out"; then
     echo "ok    a broken policy is reported"
     pass=$((pass + 1))
 else
     echo "FAIL  a broken policy is reported: no warning in the output"
     fail=$((fail + 1))
 fi
-if printf '%s\n' "$last_out" | grep -q 'no owner in remote'; then
+if grep -q 'no owner in remote' <<<"$last_out"; then
     echo "ok    a broken policy's reason is passed on"
     pass=$((pass + 1))
 else
@@ -144,7 +144,7 @@ new_repo "$root/mine-broken" "git@github.com:greened/thing.git" \
 git -C "$root/mine-broken" config user.name "David Greene"
 check "a personal repo with a broken policy loses the trailer" stripped \
       "$root/mine-broken"
-if printf '%s\n' "$last_out" | grep -q 'cannot read the policy'; then
+if grep -q 'cannot read the policy' <<<"$last_out"; then
     echo "FAIL  a personal repo does not report a broken policy"
     fail=$((fail + 1))
 else

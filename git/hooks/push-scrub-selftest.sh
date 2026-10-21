@@ -335,7 +335,7 @@ check "a malformed commit cap is refused" refused "$root/cap-bad" main
 
 # not_shown DESCRIPTION asserts the last push printed no hit.
 not_shown() {
-    if printf '%s\n' "$last_out" | grep -q "$key"; then
+    if grep -q "$key" <<<"$last_out"; then
         echo "FAIL  $1"
         fail=$((fail + 1))
     else
@@ -405,7 +405,7 @@ precommit() {
     fi
     # Other pre-commit checks can refuse too, so a refusal counts only when
     # the scrub made it.
-    if [ "$got" = refused ] && ! printf '%s\n' "$out" | grep -q '^scrub: refusing'; then
+    if [ "$got" = refused ] && ! grep -q '^scrub: refusing' <<<"$out"; then
         got="refused by another check"
     fi
     if [ "$got" = "$want" ]; then

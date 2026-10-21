@@ -274,7 +274,7 @@ report() {
     # is how five dead terms audited clean: the pattern they had decayed into
     # still matched the line they sat on in the list.
     probe="$(printf '%s' "$t" | sed -e 's/^\\b//' -e 's/\\b$//')"
-    if [ -z "$one" ] || ! printf 'x %s y\n' "$probe" | grep -qiE -- "$one"; then
+    if [ -z "$one" ] || ! grep -qiE -- "$one" <<<"x $probe y"; then
       flags="$flags INERT"
       inert=$((inert + 1))
     fi
