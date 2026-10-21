@@ -1,0 +1,8 @@
+# Repo roots for the agent-recipes todo tools on Linux, deployed by link.sh to
+# ~/.config/agent-recipes/roots. One absolute or ~ path per line, highest
+# priority first.
+#
+# The ws root is the /srv/nfs spelling, not ~/ws: that link resolves to /net,
+# and settings.json drops every CLAUDE.md under /net.
+/srv/nfs/dgreene-data/ws
+~/projects

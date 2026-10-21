@@ -7,6 +7,14 @@ OV="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 link "$OV/git/gitconfig" "$HOME/.gitconfig"
 
+# The repo roots the agent-recipes todo tools search. Chosen by platform, not
+# hostname, so this public repo names no host.
+case "$(uname)" in
+  Linux)  link "$OV/agent-recipes/roots-linux"  "$HOME/.config/agent-recipes/roots" ;;
+  Darwin) link "$OV/agent-recipes/roots-darwin" "$HOME/.config/agent-recipes/roots" ;;
+  *) echo "   warn: no agent-recipes roots for $(uname)" >&2 ;;
+esac
+
 # Keep the hook chain's three config files private, on EVERY machine.
 #
 # The chain deployed above (via `core.hooksPath') reads the term list, the realm

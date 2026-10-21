@@ -1,0 +1,5 @@
+# Repo roots for the agent-recipes todo tools on macOS, deployed by link.sh to
+# ~/.config/agent-recipes/roots. One absolute or ~ path per line, highest
+# priority first.
+~/projects
+~/lib
