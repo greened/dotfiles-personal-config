@@ -518,16 +518,23 @@ of the form \"`X.Y.Z`_ - YYYY-MM-DD\" below an undated \"`Unreleased`_\"."
          text)
     (cons (match-string 1 text) (match-string 2 text))))
 
-(defun dag/release--changelog-refusal (shown version today)
+(defun dag/release--changelog-refusal (shown version today dir)
   "Return why the changelog refuses VERSION on TODAY, or nil to go ahead.
-SHOWN is the (STATUS . OUTPUT) of `git show' for the changelog."
+SHOWN is the (STATUS . OUTPUT) of `git show' for the changelog. DIR is the
+clone, named in the fix the message gives."
   (if (not (zerop (car shown)))
       (format "cannot read docs/changelog.rst: %s" (cdr shown))
     (let ((top (dag/release--changelog-top (cdr shown))))
       (unless (equal top (cons version today))
-        (format "docs/changelog.rst heads %s, not %s - %s"
+        (format "docs/changelog.rst heads %s, not %s - %s. %s, land it \
+through the commit agent, and cut the release at that commit"
                 (if top (format "%s - %s" (car top) (cdr top)) "no release")
-                version today)))))
+                version today
+                ;; changelog.py refuses a version the file already has.
+                (if (equal (car top) version)
+                    (format "Redate the %s heading in %s" version dir)
+                  (format "Run ./changelog.py --version %s in %s"
+                          version dir)))))))
 
 (defun dag/gaffer-release-pypi (item strategy)
   "Cut ITEM's PyPI release and return the tag, for `gaffer-release-function'.
@@ -553,10 +560,11 @@ Refuse rather than reset when the clone is not current. A release is the wrong
 place to discard local state.
 
 Refuse when the changelog at the cut point does not head this version dated
-today. The date goes stale between drafting the notes and the cut. Fixing it
-here would make a commit that no gate reviews, so the fix goes through the
-usual flow and the release runs again. A retry on a later day refuses too.
-It needs a commit that redates the heading."
+today, and say how to fix it. The date goes stale between drafting the notes
+and the cut. Do not run changelog.py here. The commit gate judges only agent
+commits, so a commit made here would go unreviewed, and the tag belongs on
+that new commit rather than on ITEM. So the fix lands through the usual flow
+and the release is cut again at it. A retry on a later day refuses too."
   (unless (eq strategy 'pypi)
     (error "gaffer release: %s has strategy %S, not pypi"
            (gaffer-item-repo item) strategy))
@@ -617,7 +625,8 @@ It needs a commit that redates the heading."
         (let ((why (dag/release--changelog-refusal
                     (dag/release--git "show"
                                       (concat landed ":docs/changelog.rst"))
-                    version (format-time-string "%F"))))
+                    version (format-time-string "%F")
+                    (file-local-name default-directory))))
           (when why
             (error "gaffer release: at %s, %s" (substring landed 0 8) why)))
         (setq existing (dag/release--existing-tag tag landed))

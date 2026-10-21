@@ -63,29 +63,46 @@ Removed
 
 (ert-deftest release-changelog-refusal-passes-this-version-today ()
   (should-not (dag/release--changelog-refusal
-               (cons 0 release-tests--changelog) "0.0.41" "2026-10-06")))
+               (cons 0 release-tests--changelog) "0.0.41" "2026-10-06"
+               "/clone/")))
 
 (ert-deftest release-changelog-refusal-wrong-version ()
   (should (string-match-p "heads 0.0.41 - 2026-10-06, not 0.0.42"
                           (dag/release--changelog-refusal
                            (cons 0 release-tests--changelog)
-                           "0.0.42" "2026-10-06"))))
+                           "0.0.42" "2026-10-06" "/clone/"))))
 
 (ert-deftest release-changelog-refusal-stale-date ()
   (should (string-match-p "not 0.0.41 - 2026-10-07"
                           (dag/release--changelog-refusal
                            (cons 0 release-tests--changelog)
-                           "0.0.41" "2026-10-07"))))
+                           "0.0.41" "2026-10-07" "/clone/"))))
 
 (ert-deftest release-changelog-refusal-no-heading ()
   (should (string-match-p "heads no release"
                           (dag/release--changelog-refusal
-                           (cons 0 "`Unreleased`_\n") "0.0.41" "2026-10-06"))))
+                           (cons 0 "`Unreleased`_\n") "0.0.41" "2026-10-06"
+                           "/clone/"))))
 
 (ert-deftest release-changelog-refusal-missing-file ()
   (should (string-match-p "cannot read docs/changelog.rst: fatal"
                           (dag/release--changelog-refusal
                            (cons 128 "fatal: path does not exist")
-                           "0.0.41" "2026-10-06"))))
+                           "0.0.41" "2026-10-06" "/clone/"))))
+
+(ert-deftest release-changelog-refusal-undated-names-changelog-py ()
+  (should (string-match-p
+           "Run \\./changelog\\.py --version 0\\.0\\.42 in /clone/, land it"
+           (dag/release--changelog-refusal
+            (cons 0 release-tests--changelog) "0.0.42" "2026-10-06"
+            "/clone/"))))
+
+;; changelog.py refuses a version the file already has, so it is not the fix.
+(ert-deftest release-changelog-refusal-stale-date-asks-for-a-redate ()
+  (let ((why (dag/release--changelog-refusal
+              (cons 0 release-tests--changelog) "0.0.41" "2026-10-07"
+              "/clone/")))
+    (should (string-match-p "Redate the 0\\.0\\.41 heading in /clone/" why))
+    (should-not (string-match-p "changelog\\.py" why))))
 
 ;;; release-tests.el ends here
