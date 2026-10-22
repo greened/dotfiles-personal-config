@@ -285,6 +285,15 @@
                            :build-target name
                            :test-target name))))
 
+;;; Name the git-project section for each repo with more than one, so
+;;; magit-git-project needn't ask.
+
+(with-eval-after-load 'magit-git-project
+  (dolist (entry '(("~/projects/devtools/*" . "dev")
+                   ("~/projects/gazette/*" . "dev")
+                   ("~/lib/dotfiles/*" . "dev")))
+    (add-to-list 'magit-git-project-names entry t)))
+
 ;;; gaffer: how my personal repos publish. Every one of them is a quite
 ;;; project (the block above), so none needs a `gaffer-repo-build-backends'
 ;;; override any more -- gaffer's global `quite' backend, which the work overlay
