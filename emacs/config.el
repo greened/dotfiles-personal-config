@@ -168,6 +168,49 @@
   (define-key quite-command-map (kbd "Mh")
 		   (lambda () (interactive) (mirv-hydra-build/body))))
 
+;;; quite: where my projects live on each machine. Every descriptor below
+;;; takes its :root-list from here.
+
+(defvar dag/quite-host-roots
+  (list
+   (list 'mac
+         (lambda ()
+           (and (eq system-type 'darwin) (equal user-login-name "dag")))
+         '("/Users/dag/projects"))
+   ;; Both the build VM and my personal laptop keep their checkouts under
+   ;; ~/projects. The path uses ~ rather than the full one, which would
+   ;; put the VM's home directory in a public repo.
+   (list 'linux
+         (lambda () (eq system-type 'gnu/linux))
+         '("~/projects" "~/lib")))
+  "Where my quite projects live on each machine, as (HOST TEST ROOTS).
+The first entry whose TEST returns non-nil gives the ROOTS. The TESTs look at
+the machine Emacs runs on, so a TRAMP buffer on another host still gets the
+local machine's roots.")
+
+(defun dag/quite-roots ()
+  "Return this machine's project roots from `dag/quite-host-roots'.
+Return nil on a machine the table does not name. quite then finds a project
+only from a buffer visiting one of its files, and asks for a root otherwise,
+which is better than a guessed path."
+  (nth 2 (seq-find (lambda (entry) (funcall (nth 1 entry)))
+                   dag/quite-host-roots)))
+
+(defun dag/quite-descriptor (dir key-files &optional default-worktree)
+  "Return a quite descriptor for the repo in DIR, marked by KEY-FILES.
+Most of my repos are git-project umbrellas, with every worktree one level
+below DIR. quite's root search tests key files directly under DIR only, so
+also list them under DEFAULT-WORKTREE (\"main\" by default). From a buffer
+visiting a file in a worktree, the plain KEY-FILES match first, so quite
+builds that worktree. From a buffer visiting no file, such as Magit or Dired,
+quite builds DEFAULT-WORKTREE."
+  (let ((wt (or default-worktree "main")))
+    (list :project-dir dir
+          :root-list (dag/quite-roots)
+          :key-files (append key-files
+                             (mapcar (lambda (f) (concat wt "/" f))
+                                     key-files)))))
+
 (with-eval-after-load 'quite
   ;; Every one of these is a shell project: quite runs the command's
   ;; :shell-command and nothing else. They have a single build flavor, so none
@@ -185,9 +228,7 @@
       (quite-define-project
        (list :name name
              :build-architecture 'shell
-             :descriptor (list :project-dir name
-                               :root-list '("/Users/dag/projects")
-                               :key-files files)
+             :descriptor (dag/quite-descriptor name files)
              :prefix-key key
              :target name
              :commands '((:name "build" :command "build" :key "b"
@@ -205,9 +246,8 @@
   (quite-define-project
    (list :name "quite"
          :build-architecture 'shell
-         :descriptor '(:project-dir "quite"
-                       :root-list ("/Users/dag/projects")
-                       :key-files ("quite.el" "Cask"))
+         :descriptor (dag/quite-descriptor "quite" '("quite.el" "Cask")
+                                           "master")
          :prefix-key "t"
          :target "quite"
          :commands '((:name "build" :command "build" :key "b"
@@ -260,9 +300,8 @@
       (quite-define-project
        (list :name name
              :build-architecture 'shell
-             :descriptor (list :project-dir name
-                               :root-list '("/Users/dag/projects")
-                               :key-files '("pyproject.toml"))
+             :descriptor (dag/quite-descriptor name '("pyproject.toml")
+                                               "master")
              :prefix-key key
              :target name
              :commands
