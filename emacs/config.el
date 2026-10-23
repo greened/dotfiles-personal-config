@@ -630,14 +630,16 @@ through the commit agent, and cut the release at that commit"
                   (format "Run ./changelog.py --version %s in %s"
                           version dir)))))))
 
-(defun dag/gaffer-release-pypi (item strategy)
-  "Cut ITEM's PyPI release and return the tag, for `gaffer-release-function'.
+(defun dag/release-pypi (repo version commit)
+  "Cut REPO's PyPI release at COMMIT and return the tag.
+REPO is an \"owner/name\" with the `pypi' strategy in
+`gaffer-repo-release-strategies'. COMMIT is any revision that names a commit
+on origin/master. The tag prompt offers vVERSION, or with VERSION nil the last
+tag bumped, and nothing is tagged until that prompt is answered.
 
-Tag ITEM's own commit, which is the release CUT POINT. Everything up to and
-including it ships and its items clear to `done'. Anything that landed after
-it stays parked at `to-release' for a later cut. That falls out of
-`gaffer--released-p' testing CONTAINMENT, so cutting at an item is how you
-choose where a release stops.
+A release with no gaffer item calls this directly. The prompt stays even
+when VERSION is given, because the upload cannot be undone and the caller
+may be an agent.
 
 Tag and build in the clone `gaffer-repo-paths' names, which may be remote.
 Build in a throwaway worktree at the tag rather than in the clone.  hatch-vcs
@@ -657,16 +659,19 @@ Refuse when the changelog at the cut point does not head this version dated
 today, and say how to fix it. The date goes stale between drafting the notes
 and the cut. Do not run changelog.py here. The commit gate judges only agent
 commits, so a commit made here would go unreviewed, and the tag belongs on
-that new commit rather than on ITEM. So the fix lands through the usual flow
+that new commit rather than on COMMIT. So the fix lands through the usual flow
 and the release is cut again at it. A retry on a later day refuses too."
-  (unless (eq strategy 'pypi)
-    (error "gaffer release: %s has strategy %S, not pypi"
-           (gaffer-item-repo item) strategy))
-  (let* ((name (file-name-nondirectory (gaffer-item-repo item)))
-         (default-directory
-          (file-name-as-directory (gaffer--repo-path (gaffer-item-repo item))))
-         (landed (or (gaffer--release-sha item)
-                     (error "gaffer release: %s has no landed commit" name)))
+  (let ((strategy (alist-get repo gaffer-repo-release-strategies
+                             nil nil #'equal)))
+    (unless (eq strategy 'pypi)
+      (error "gaffer release: %s has strategy %S, not pypi" repo strategy)))
+  ;; git reads a leading dash as an option.
+  (when (or (not (stringp commit)) (string-empty-p commit)
+            (string-prefix-p "-" commit))
+    (error "gaffer release: %S is not a usable commit" commit))
+  (let* ((name (file-name-nondirectory repo))
+         (default-directory (file-name-as-directory (gaffer--repo-path repo)))
+         (landed nil)
          (tagged nil)
          (moved nil)
          (existing nil)
@@ -685,6 +690,12 @@ and the release is cut again at it. A retry on a later day refuses too."
           (remote (dag/release--git! "rev-parse" "origin/master")))
       (unless (equal head remote)
         (error "gaffer release: %s is not at origin/master, sync it first" name))
+      ;; The full hash, which the existing-tag check compares against.
+      (let ((resolved (dag/release--git "rev-parse" "--verify" "--quiet"
+                                        (concat commit "^{commit}"))))
+        (unless (zerop (car resolved))
+          (error "gaffer release: %s has no commit %s" name commit))
+        (setq landed (cdr resolved)))
       (unless (zerop (car (dag/release--git "merge-base" "--is-ancestor"
                                             landed "HEAD")))
         (error "gaffer release: %s is not an ancestor of the head"
@@ -697,7 +708,9 @@ and the release is cut again at it. A retry on a later day refuses too."
              (tag (read-string
                    (format "%s: tag %s (%s since %s, %s stay parked) as: "
                            name (substring landed 0 8) since last after)
-                   (dag/release--bump last)))
+                   (if version
+                       (concat "v" (string-remove-prefix "v" version))
+                     (dag/release--bump last))))
              (version (string-remove-prefix "v" tag)))
         (when (string-empty-p tag)
           (error "gaffer release: no tag given"))
@@ -830,6 +843,22 @@ got %S" (mapcar #'file-name-nondirectory built)))
                                  (file-local-name build-dir)))
              (build-dir
               (ignore-errors (delete-directory build-dir))))))))))
+
+(defun dag/gaffer-release-pypi (item strategy)
+  "Cut ITEM's PyPI release and return the tag, for `gaffer-release-function'.
+
+Tag ITEM's own commit, which is the release CUT POINT. Everything up to and
+including it ships and its items clear to `done'. Anything that landed after
+it stays parked at `to-release' for a later cut. That falls out of
+`gaffer--released-p' testing CONTAINMENT, so cutting at an item is how you
+choose where a release stops. `dag/release-pypi' does the work."
+  (let ((repo (gaffer-item-repo item)))
+    (unless (eq strategy 'pypi)
+      (error "gaffer release: %s has strategy %S, not pypi" repo strategy))
+    (dag/release-pypi repo nil
+                      (or (gaffer--release-sha item)
+                          (error "gaffer release: %s has no landed commit"
+                                 (file-name-nondirectory repo))))))
 
 (with-eval-after-load 'gaffer
   (setq gaffer-release-function #'dag/gaffer-release-pypi)
