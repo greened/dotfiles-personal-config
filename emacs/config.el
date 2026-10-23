@@ -223,7 +223,8 @@ quite builds DEFAULT-WORKTREE."
                ("prevue"          "v" ("prevue.el" "check.sh"))
                ("gazette"         "z" ("gazette.el" "check.sh"))
                ("quarry"          "q" ("quarry.el" "check.sh"))
-               ("slack-attention" "a" ("check.sh"))))
+               ("slack-attention" "a" ("check.sh"))
+               ("magit-git-project" "g" ("magit-git-project.el" "check.sh"))))
     (let ((name (nth 0 p)) (key (nth 1 p)) (files (nth 2 p)))
       (quite-define-project
        (list :name name
@@ -256,6 +257,51 @@ quite builds DEFAULT-WORKTREE."
                             :shell-command "PATH=$HOME/.cask/bin:$PATH make test"))))
   (quite-register-repo "greened/quite"
                        :project "quite" :build-target "quite" :test-target "quite")
+
+  ;; tokenomics pins its test tools in its hatch environments, so hatch runs
+  ;; them. Creating the default environment is the build. It installs the
+  ;; package and its pinned tools, and fails when either cannot be installed.
+  ;; hatch keeps the environment outside the worktree. The check also runs the
+  ;; Emacs interface's own check.sh. Lint is its own command, so a check stays
+  ;; a test run.
+  (quite-define-project
+   (list :name "tokenomics"
+         :build-architecture 'shell
+         :descriptor (dag/quite-descriptor "tokenomics" '("pyproject.toml"))
+         :prefix-key "n"
+         :target "tokenomics"
+         :commands '((:name "build" :command "build" :key "b"
+                            :shell-command "hatch env create")
+                     (:name "check" :command "check" :key "k"
+                            :shell-command "hatch run test && emacs/check.sh")
+                     (:name "lint" :command "lint" :key "l"
+                            :shell-command "hatch run lint:all"))))
+  (quite-register-repo "greened/tokenomics"
+                       :project "tokenomics"
+                       :build-target "tokenomics"
+                       :test-target "tokenomics")
+
+  ;; skills-personal has nothing to build, so it gets a check alone. It is not
+  ;; registered as a repo, since its remote is not under greened. On the VM
+  ;; its worktrees sit under skills-personal-wt, a name quite cannot match to
+  ;; the project. So the roots leave out ~/.claude, where the main checkout
+  ;; lives, or a worktree's buffer would build the main checkout.
+  (quite-define-project
+   (list :name "skills-personal"
+         :build-architecture 'shell
+         ;; Plain checkout form, since skills-personal has no main/ below it.
+         ;; A root-level key file comes first because quite builds in the
+         ;; directory of the first key file it finds.
+         :descriptor (list :project-dir "skills-personal"
+                           :root-list (dag/quite-roots)
+                           :key-files '("tiers.conf" "bin/selftest.sh"))
+         :prefix-key "S"
+         :target "skills-personal"
+         :commands '((:name "check" :command "check" :key "k"
+                            :shell-command "bash bin/selftest.sh"))))
+
+  ;; devtools and coding-agent-recipes get projects once each has a check
+  ;; entry point.
 
   ;; The Python packages build with uv, which both machines have. Building the
   ;; distribution is deliberately NOT the build verb: it writes dist/ into the
@@ -353,6 +399,7 @@ quite builds DEFAULT-WORKTREE."
   (dolist (repo '("greened/gaffer" "greened/prevue" "greened/gazette"
                   "greened/quarry" "greened/slack-attention" "greened/quite"
                   "greened/git-project" "greened/git-project-core-plugins"
+                  "greened/magit-git-project" "greened/tokenomics"
                   "greened/dotfiles-public" "greened/dotfiles-personal-config"
                   "greened/dotfiles-personal-secret"))
     (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
