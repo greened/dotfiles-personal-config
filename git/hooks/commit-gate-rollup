@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Count the commit gate's decisions by decision and reason class.
+
+    commit-gate-rollup [--warn] [FILE]
+
+FILE defaults to ~/.local/state/commitgate/decisions.log, and `-' reads
+stdin. --warn keeps only the warn rows, which are the commits enforce mode
+would have stopped. The log is only read.
+
+A reason class is the reason with its shas, refs and paths replaced and its
+", guarded since" clause dropped, so the same rule groups as one class
+whatever branch it fired on. Under each class, an `op' line counts its rows
+by git operation. A row with no operation column counts as "(not logged)".
+"""
+
+import os
+import re
+import sys
+from collections import Counter
+
+USAGE = "usage: commit-gate-rollup [--warn] [FILE]"
+DEFAULT_LOG = os.path.expanduser("~/.local/state/commitgate/decisions.log")
+
+# A ref ends at a space, or at a comma or period that ends its clause.
+REF_RE = re.compile(r"\brefs/\S+?(?=[,.]?(?:\s|$))")
+SHA_RE = re.compile(r"\b[0-9a-f]{7,64}\b")
+PATH_RE = re.compile(r"(?<![\w.])/[^\s,:]+")
+# Anything may append to the log, so a byte that drives the terminal is
+# printed as "?".
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def reason_class(why):
+    why = why.split(", guarded since ", 1)[0]
+    why = REF_RE.sub("<ref>", why)
+    why = SHA_RE.sub("<sha>", why)
+    return PATH_RE.sub("<path>", why)
+
+
+def main(argv):
+    warn_only = False
+    path = None
+    for a in argv:
+        if a == "--warn":
+            warn_only = True
+        elif a in ("-h", "--help"):
+            print(USAGE)
+            return 0
+        elif a.startswith("--") or path is not None:
+            print(USAGE, file=sys.stderr)
+            return 2
+        else:
+            path = a
+    path = path or DEFAULT_LOG
+
+    try:
+        f = sys.stdin if path == "-" else open(path, encoding="utf-8", errors="replace")
+    except OSError as e:
+        print("commit-gate-rollup: %s: %s" % (path, e.strerror), file=sys.stderr)
+        return 1
+
+    classes = {}
+    skipped = 0
+    with f:
+        for line in f:
+            cols = [CONTROL_RE.sub("?", c) for c in line.rstrip("\n").split("\t")]
+            if len(cols) < 7:
+                skipped += 1
+                continue
+            decision, why = cols[5], cols[6]
+            if warn_only and decision != "warn":
+                continue
+            op = cols[7] if len(cols) > 7 else "(not logged)"
+            key = (decision, reason_class(why))
+            classes.setdefault(key, Counter())[op] += 1
+
+    totals = Counter()
+    for (decision, _), ops in classes.items():
+        totals[decision] += sum(ops.values())
+    for decision in sorted(totals):
+        print("%s %d" % (decision, totals[decision]))
+    rows = sorted(classes.items(), key=lambda kv: (kv[0][0], -sum(kv[1].values()), kv[0][1]))
+    for (decision, cls), ops in rows:
+        print("")
+        print("%5d  %s  %s" % (sum(ops.values()), decision, cls))
+        for op, n in sorted(ops.items(), key=lambda kv: (-kv[1], kv[0])):
+            print("         op %s: %d" % (op, n))
+    if skipped:
+        print("")
+        print("skipped %d malformed row%s" % (skipped, "" if skipped == 1 else "s"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

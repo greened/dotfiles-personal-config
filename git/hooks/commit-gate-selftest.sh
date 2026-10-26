@@ -13,6 +13,7 @@
 # through a probe hook and not the chain, since every rule below leans on it.
 set -euo pipefail
 unset CLAUDECODE CLAUDE_CODE_SESSION_ID GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+unset GIT_REFLOG_ACTION
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -289,15 +290,49 @@ stage "$r" b.txt b
 before="$(log_lines)"
 run "warn: the same commit passes" pass "$r" claude git commit -q -m "secret words here"
 said "warn: it still says what would fail" "commit-gate: warn: enforce mode would refuse this"
-IFS=$'\t' read -r l_time l_repo l_ref l_new l_caller l_dec l_why <<< "$(tail -n 1 "$log")"
+IFS=$'\t' read -r l_time l_repo l_ref l_new l_caller l_dec l_why l_op <<< "$(tail -n 1 "$log")"
 if [ -n "$l_time" ] && [ "$l_repo" = "$r" ] && [ "$l_ref" = refs/heads/main ] &&
    [ "$l_new" = "$(tip "$r")" ] && [ "$l_caller" = claude ] &&
-   [ "$l_dec" = warn ] && [ -n "$l_why" ]; then
-    ok "warn: the log line has time, repo, ref, sha, caller, decision and reason"
+   [ "$l_dec" = warn ] && [ -n "$l_why" ] && [ "$l_op" = - ]; then
+    ok "warn: the log line has time, repo, ref, sha, caller, decision, reason and op"
 else
-    bad "warn: the log line has time, repo, ref, sha, caller, decision and reason" \
+    bad "warn: the log line has time, repo, ref, sha, caller, decision, reason and op" \
         "$(tail -n 1 "$log")"
 fi
+# The op comes last, so the reason keeps its column.
+if [ "$(tail -n 1 "$log" | awk -F'\t' '{print NF}')" = 8 ]; then
+    ok "the op is a new last column after the reason"
+else
+    bad "the op is a new last column after the reason" "$(tail -n 1 "$log")"
+fi
+op_n=0
+# `op_case NAME ACTION WANT` commits under `GIT_REFLOG_ACTION=ACTION` and
+# expects `WANT` in the op column.
+op_case() {
+    local name="$1" action="$2" want="$3" got
+    op_n=$((op_n + 1))
+    stage "$r" "op-$op_n.txt" op
+    GIT_REFLOG_ACTION="$action" \
+        run "warn: a commit under $name passes" pass "$r" claude git commit -q -m "op"
+    got="$(tail -n 1 "$log" | awk -F'\t' '{print $8}')"
+    if [ "$got" = "$want" ] && [ "$(tail -n 1 "$log" | awk -F'\t' '{print NF}')" = 8 ]; then
+        ok "the op column reads $want for $name"
+    else
+        bad "the op column reads $want for $name" "$(tail -n 1 "$log")"
+    fi
+}
+op_case "a rebase step" "rebase (pick) more $(printf 'x%.0s' $(seq 1 200))" "rebase (pick)"
+op_case "a pull with a token in its URL" "pull https://u:tok3n@host/r" pull
+op_case "an escape sequence" $'\e[31mevil' -
+if ! grep -q 'tok3n' "$log"; then
+    ok "a token in GIT_REFLOG_ACTION never reaches the log"
+else
+    bad "a token in GIT_REFLOG_ACTION never reaches the log"
+fi
+rebase_dir="$(git -C "$r" rev-parse --path-format=absolute --git-path rebase-merge)"
+mkdir "$rebase_dir"
+op_case "an unexported rebase" "" "rebase (in progress)"
+rmdir "$rebase_dir"
 if [ "$(log_lines)" -gt "$before" ] && ! grep -q 'secret words' "$log"; then
     ok "warn: logged, and the log holds no message text"
 else
@@ -1100,6 +1135,61 @@ git -C "$root/pc-clone" config --local --unset core.hooksPath
 : > "$root/pc-clone/.git/config.lock"
 run "post-checkout never fails the checkout" pass "$root/pc-clone" git checkout -q -b y
 rm -f "$root/pc-clone/.git/config.lock"
+
+# --- The rollup -----------------------------------------------------------
+
+rollup="$hooks/commit-gate-rollup"
+rlog="$root/rollup.log"
+t=2026-01-01T00:00:00Z
+g=", guarded since remote.origin.url is a network remote"
+{
+    printf '%s\t/r/a\trefs/heads/one\t%s\tclaude\twarn\t%s\n' "$t" "${zero//0/a}" \
+        "refs/heads/one would move to aaaaaaaaaaaa, and no commit or move record approves it$g"
+    printf '%s\t/r/b\trefs/heads/two.x\t%s\tclaude\twarn\t%s\trebase\n' "$t" "${zero//0/b}" \
+        "refs/heads/two.x would move to bbbbbbbbbbbb, and no commit or move record approves it$g"
+    printf '%s\t/r/b\tHEAD\t%s\tclaude\twarn\t%s\t-\n' "$t" "${zero//0/c}" \
+        "a new commit on a detached HEAD, outside a rebase-land operation and with no commit record$g"
+    printf '%s\t/r/c\trefs/heads/x\t-\tclaude\trefuse\t%s\t-\n' "$t" \
+        "no commit record approves this commit on refs/heads/x. A record names this branch and tip, but its tree differs"
+    printf '%s\t/r/c\trefs/heads/x\t-\tclaude\tpass\t%s\t-\n' "$t" \
+        "a commit record approves it, guarded since the git dir of /r/c/.git cannot be read"
+    printf '%s\t/r/c\trefs/heads/p\t-\tclaude\trefuse\t%s\t-\n' "$t" \
+        "pre-push: the push of refs/heads/p carries cccccccccccc, and no local branch has it"
+    printf '%s\t/r/c\trefs/heads/p\t-\tclaude\trefuse\t%s\t-\n' "$t" "a path /r/c/x.txt here"
+    printf 'not a row\n'
+} > "$rlog"
+before="$(cat "$rlog")"
+out="$("$rollup" "$rlog")"
+if grep -qxF '    2  warn  <ref> would move to <sha>, and no commit or move record approves it' <<< "$out" &&
+   grep -qxF '         op (not logged): 1' <<< "$out" &&
+   grep -qxF '         op rebase: 1' <<< "$out" &&
+   grep -qxF '    1  refuse  no commit record approves this commit on <ref>. A record names this branch and tip, but its tree differs' <<< "$out" &&
+   grep -qxF '    1  refuse  pre-push: the push of <ref> carries <sha>, and no local branch has it' <<< "$out" &&
+   grep -qxF '    1  refuse  a path <path> here' <<< "$out" &&
+   grep -qxF 'warn 3' <<< "$out" && grep -qxF 'pass 1' <<< "$out" &&
+   grep -qxF 'skipped 1 malformed row' <<< "$out"; then
+    ok "rollup: refs and shas group as one class, and old rows count as not logged"
+else
+    bad "rollup: refs and shas group as one class, and old rows count as not logged" "$out"
+fi
+out="$("$rollup" --warn "$rlog")"
+if grep -qxF 'warn 3' <<< "$out" && ! grep -qE 'pass|refuse' <<< "$out"; then
+    ok "rollup --warn keeps only the warn rows"
+else
+    bad "rollup --warn keeps only the warn rows" "$out"
+fi
+is "rollup leaves the log as it was" [ "$(cat "$rlog")" = "$before" ]
+out="$("$rollup" --warn "$log")"
+if grep -qxF '         op rebase (pick): 1' <<< "$out"; then
+    ok "rollup reads the op the gate wrote"
+else
+    bad "rollup reads the op the gate wrote" "$out"
+fi
+if "$rollup" --bogus "$rlog" >/dev/null 2>&1; then
+    bad "rollup refuses an unknown option"
+else
+    ok "rollup refuses an unknown option"
+fi
 
 echo
 echo "$pass passed, $fail failed"

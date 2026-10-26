@@ -65,16 +65,38 @@ cg_repo() {
 
 # One line per guarded decision. The message is never written, only the ref
 # and the sha, so the log holds nothing a commit said.
+# The last column names the git operation, so a restack reads apart from a
+# reset. It comes last so the older columns keep their places. Only the verb
+# of GIT_REFLOG_ACTION is kept, with a one-word step such as `(pick)', because
+# git pull puts its arguments there and a URL can carry a token. Git may not
+# export it to hooks during a rebase, so a rebase directory in the git dir
+# also marks one.
 cg_log() {
-  local dir="$HOME/.local/state/commitgate" repo why="$4"
+  local dir="$HOME/.local/state/commitgate" repo why="$4" op="" path
+  local op_re='^([a-z][a-z-]*)( \(([a-z-]+)\))?'
   repo="$(cg_repo)"
   repo="${repo//[$'\t\n\r']/ }"
   [ -z "${cg_guard_why:-}" ] || why="$why, guarded since $cg_guard_why"
   why="${why//[$'\t\n\r']/ }"
+  if [[ "${GIT_REFLOG_ACTION:-}" =~ $op_re ]]; then
+    op="${BASH_REMATCH[1]:0:40}"
+    if [ -n "${BASH_REMATCH[3]:-}" ]; then
+      op="$op (${BASH_REMATCH[3]:0:40})"
+    fi
+  fi
+  if [ -z "$op" ]; then
+    while IFS= read -r path; do
+      if [ -n "$path" ] && [ -d "$path" ]; then
+        op="rebase (in progress)"
+        break
+      fi
+    done <<< "$(git rev-parse --git-path rebase-merge --git-path rebase-apply 2>/dev/null || true)"
+  fi
+  [ -n "$op" ] || op=-
   { mkdir -p "$dir" &&
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$repo" "$1" "$2" claude "$3" "$why" \
-      >> "$dir/decisions.log"; } 2>/dev/null || true
+      "$op" >> "$dir/decisions.log"; } 2>/dev/null || true
 }
 
 # cg_refusal MODE WHAT [COMMAND] says what failed, what state git is left in,
