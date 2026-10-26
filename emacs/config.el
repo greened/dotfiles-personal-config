@@ -394,14 +394,14 @@ quite builds DEFAULT-WORKTREE."
 ;;; reason: without an entry the default resolution sees a dev branch that is
 ;;; not the default branch and picks `open-pr', which would open a pull request
 ;;; on repos that have never had one. The work overlay adds its own, since
-;;; naming it here would put the employer in a public repo.
+;;; naming it here would put the employer in a public repo. A private overlay
+;;; adds its own entry too, so this public overlay names no private repo.
 (with-eval-after-load 'gaffer
   (dolist (repo '("greened/gaffer" "greened/prevue" "greened/gazette"
                   "greened/quarry" "greened/slack-attention" "greened/quite"
                   "greened/git-project" "greened/git-project-core-plugins"
                   "greened/magit-git-project" "greened/tokenomics"
-                  "greened/dotfiles-public" "greened/dotfiles-personal-config"
-                  "greened/dotfiles-personal-secret"))
+                  "greened/dotfiles-public" "greened/dotfiles-personal-config"))
     (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
           'ff-merge)))
 

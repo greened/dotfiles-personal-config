@@ -40,8 +40,6 @@ push-trust  git@github.com:greened/coding-agent-recipes.git
 repo  git@github.com:greened/dotfiles-public.git
 push-trust  git@github.com:greened/dotfiles-public.git
 repo  git@github.com:greened/dotfiles-personal-config.git
-repo  git@github.com:greened/dotfiles-personal-secret.git
-push-trust  git@github.com:greened/dotfiles-personal-secret.git
 
 # These three diverged branches are left alone, on request.
 leave  git@github.com:greened/gaffer.git  store-write-keeps-previous
