@@ -176,7 +176,7 @@
    (list 'mac
          (lambda ()
            (and (eq system-type 'darwin) (equal user-login-name "dag")))
-         '("/Users/dag/projects"))
+         '("/Users/dag/projects" "~/lib"))
    ;; Both the build VM and my personal laptop keep their checkouts under
    ;; ~/projects. The path uses ~ rather than the full one, which would
    ;; put the VM's home directory in a public repo.
@@ -210,6 +210,23 @@ quite builds DEFAULT-WORKTREE."
           :key-files (append key-files
                              (mapcar (lambda (f) (concat wt "/" f))
                                      key-files)))))
+
+(defun dag/quite-overlay-descriptor (overlay key-file)
+  "Return a quite descriptor for the dotfiles overlay OVERLAY, marked by KEY-FILE.
+The main checkout is dotfiles-overlays/OVERLAY, but its worktrees sit under
+dotfiles-wt with names quite cannot match to OVERLAY. So the descriptor
+matches dotfiles-wt and tells the overlays apart by KEY-FILE, which only
+OVERLAY has. The second key file climbs from dotfiles-wt to the main
+checkout, which quite builds for a buffer in no worktree of OVERLAY."
+  (list :project-dir "dotfiles-wt"
+        :root-list (dag/quite-roots)
+        :key-files (list key-file
+                         (concat "../dotfiles-overlays/" overlay "/" key-file))))
+
+(defvar dag/quite-dotfiles-env ""
+  "Shell text that sets up a machine's Emacs for a check.sh run.
+An overlay sets it. The dotfiles projects read it when they are defined,
+so an overlay that sets it must sort before this one in the overlay load.")
 
 (with-eval-after-load 'quite
   ;; Every one of these is a shell project: quite runs the command's
@@ -299,6 +316,38 @@ quite builds DEFAULT-WORKTREE."
          :target "skills-personal"
          :commands '((:name "check" :command "check" :key "k"
                             :shell-command "bash bin/selftest.sh"))))
+
+  ;; The dotfiles base and this overlay. Neither is registered as a repo,
+  ;; since gaffer's entries for them below set its shell backend. install.sh
+  ;; marks the base, which no overlay has. The overlay's key file sits in
+  ;; emacs/, where quite runs the command, so the command moves to the
+  ;; worktree top first.
+  (quite-define-project
+   (list :name "dotfiles"
+         :build-architecture 'shell
+         :descriptor (dag/quite-descriptor "dotfiles" '("install.sh"))
+         :prefix-key "d"
+         :target "dotfiles"
+         :command-prefix dag/quite-dotfiles-env
+         :commands '((:name "build" :command "build" :key "b"
+                            :shell-command "./check.sh build")
+                     (:name "check" :command "check" :key "k"
+                            :shell-command "./check.sh test"))))
+  (quite-define-project
+   (list :name "personal-config"
+         :build-architecture 'shell
+         :descriptor (dag/quite-overlay-descriptor "personal-config"
+                                                   "emacs/config.el")
+         :prefix-key "e"
+         :target "personal-config"
+         :command-prefix (string-trim-left
+                          (concat dag/quite-dotfiles-env
+                                  " top=$(git rev-parse --show-toplevel) &&"
+                                  " cd \"$top\" &&"))
+         :commands '((:name "build" :command "build" :key "b"
+                            :shell-command "./check.sh build")
+                     (:name "check" :command "check" :key "k"
+                            :shell-command "./check.sh test"))))
 
   ;; devtools and coding-agent-recipes get projects once each has a check
   ;; entry point.
