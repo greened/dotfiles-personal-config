@@ -136,7 +136,10 @@ Removed
   "Every stubbed call, newest first.")
 (defvar release-tests--prompts nil
   "The default each tag prompt offered, newest first.")
-(defvar release-tests--last-tag "v0.1.1")
+(defvar release-tests--last-tag "v0.1.1"
+  "What describe finds, or nil for a clone where describe fails.")
+(defvar release-tests--tags ""
+  "What a bare `tag --list' prints.")
 (defvar release-tests--publish-status 0)
 (defvar release-tests--push-status 0)
 (defvar release-tests--remote-sha release-tests--sha
@@ -161,11 +164,15 @@ dated today."
                 (string-prefix-p short release-tests--sha))
            (cons 0 release-tests--sha)
          '(1 . ""))))
-    (`("describe" . ,_) (cons 0 release-tests--last-tag))
+    (`("describe" . ,_)
+     (if release-tests--last-tag
+         (cons 0 release-tests--last-tag)
+       '(128 . "fatal: No names found, cannot describe anything.")))
     (`("rev-list" . ,_) '(0 . "2"))
     (`("show" . ,_)
      (cons 0 (format "`Unreleased`_\n-----\n\n`0.1.2`_ - %s\n"
                      (format-time-string "%F"))))
+    (`("tag" "--list") (cons 0 release-tests--tags))
     (`("tag" "--list" . ,_) '(0 . ""))
     (`("push" . ,_) (cons release-tests--push-status "rejected"))
     (`("worktree" "remove" "--force" ,dir)
@@ -289,7 +296,37 @@ The pass answer goes into BUFFER."
 (ert-deftest release-pypi-prompt-bumps-the-last-tag ()
   (release-tests--with-clone
     (dag/release-pypi "greened/pkg" nil "0123456")
-    (should (equal release-tests--prompts '("v0.1.2")))))
+    (should (equal release-tests--prompts '("v0.1.2")))
+    (should (member (list "rev-list" "--count"
+                          (concat "v0.1.1.." release-tests--sha))
+                    (release-tests--git-args)))))
+
+;; The answer is the changelog's version, so the rest of the release runs.
+(ert-deftest release-pypi-prompt-seeds-a-repo-with-no-tags ()
+  (release-tests--with-clone
+    (let ((release-tests--last-tag nil)
+          (asked nil))
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (prompt default &rest _)
+                   (push (cons prompt default) asked)
+                   "v0.1.2")))
+        (should (equal (dag/release-pypi "greened/pkg" nil "0123456")
+                       "v0.1.2")))
+      (should (equal (mapcar #'cdr asked) '("v0.1.0")))
+      (should (string-match-p "(2 commits, no earlier tag, 2 stay parked)"
+                              (car (car asked))))
+      (should (member (list "rev-list" "--count" release-tests--sha)
+                      (release-tests--git-args))))))
+
+(ert-deftest release-pypi-describe-failure-with-tags-still-refuses ()
+  (release-tests--with-clone
+    (let ((release-tests--last-tag nil)
+          (release-tests--tags "v0.1.1"))
+      (should (string-match-p
+               "git describe finds none"
+               (error-message-string
+                (should-error (dag/release-pypi "greened/pkg" nil "0123456")))))
+      (should-not release-tests--prompts))))
 
 ;; An older last tag makes the bump differ from the given version, so the
 ;; test can tell which one the prompt offered.
