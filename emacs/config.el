@@ -683,9 +683,10 @@ through the commit agent, and cut the release at that commit"
   "Cut REPO's PyPI release at COMMIT and return the tag.
 REPO is an \"owner/name\" with the `pypi' strategy in
 `gaffer-repo-release-strategies'. COMMIT is any revision that names a commit
-on origin/master. The tag prompt offers vVERSION, or with VERSION nil the last
-tag bumped, or v0.1.0 when the repo has no tags yet. Nothing is tagged until
-that prompt is answered.
+on origin/master. The tag prompt offers vVERSION, or with VERSION nil the
+nearest tag reachable from COMMIT that matches `gaffer-release-tag-pattern'
+bumped, or v0.1.0 when the repo has no such tags yet. Nothing is tagged
+until that prompt is answered.
 
 A release with no gaffer item calls this directly. The prompt stays even
 when VERSION is given, because the upload cannot be undone and the caller
@@ -750,17 +751,24 @@ and the release is cut again at it. A retry on a later day refuses too."
                                             landed "HEAD")))
         (error "gaffer release: %s is not an ancestor of the head"
                (substring landed 0 8)))
+      ;; Describe the cut, not HEAD, so a tag on a parked commit is not taken
+      ;; as the last release. The pattern is a glob, which --match takes as is.
       (let* ((last (let ((described (dag/release--git
-                                     "describe" "--tags" "--abbrev=0")))
+                                     "describe" "--tags" "--abbrev=0"
+                                     "--match" gaffer-release-tag-pattern
+                                     landed)))
                      (cond
                       ((zerop (car described)) (cdr described))
-                      ;; No tags at all means a first release. A describe failure
-                      ;; with tags still refuses.
-                      ((string-empty-p (dag/release--git! "tag" "--list"))
+                      ;; No release tags at all means a first release. A
+                      ;; describe failure with release tags still refuses.
+                      ((string-empty-p (dag/release--git!
+                                        "tag" "--list"
+                                        gaffer-release-tag-pattern))
                        nil)
-                      (t (error "gaffer release: %s has tags, but git describe \
-finds none from the head: %s"
-                                name (cdr described))))))
+                      (t (error "gaffer release: %s has tags matching %s, but \
+git describe finds none from %s: %s"
+                                name gaffer-release-tag-pattern
+                                (substring landed 0 8) (cdr described))))))
              (since (dag/release--git! "rev-list" "--count"
                                        (if last (concat last ".." landed)
                                          landed)))

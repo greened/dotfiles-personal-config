@@ -137,9 +137,15 @@ Removed
 (defvar release-tests--prompts nil
   "The default each tag prompt offered, newest first.")
 (defvar release-tests--last-tag "v0.1.1"
-  "What describe finds, or nil for a clone where describe fails.")
+  "The nearest release tag to the cut, or nil for a clone where describe fails.")
+(defvar release-tests--other-tags nil
+  "Tags nearer the cut than `release-tests--last-tag', nearest first.")
+(defvar release-tests--head-sha release-tests--sha
+  "What HEAD resolves to.")
+(defvar release-tests--head-tags nil
+  "Tags reachable from HEAD but not from the cut, nearest first.")
 (defvar release-tests--tags ""
-  "What a bare `tag --list' prints.")
+  "Every tag in the clone, one per line, for `tag --list'.")
 (defvar release-tests--publish-status 0)
 (defvar release-tests--push-status 0)
 (defvar release-tests--remote-sha release-tests--sha
@@ -154,7 +160,7 @@ dated today."
   (push (cons 'git args) release-tests--calls)
   (pcase args
     (`("rev-parse" "--git-dir") '(0 . ".git"))
-    (`("rev-parse" "HEAD") (cons 0 release-tests--sha))
+    (`("rev-parse" "HEAD") (cons 0 release-tests--head-sha))
     (`("rev-parse" "origin/master") (cons 0 release-tests--remote-sha))
     (`("merge-base" "--is-ancestor" . ,_)
      (cons release-tests--ancestor-status ""))
@@ -164,16 +170,17 @@ dated today."
                 (string-prefix-p short release-tests--sha))
            (cons 0 release-tests--sha)
          '(1 . ""))))
-    (`("describe" . ,_)
-     (if release-tests--last-tag
-         (cons 0 release-tests--last-tag)
-       '(128 . "fatal: No names found, cannot describe anything.")))
+    (`("describe" . ,_) (release-tests--describe (cdr args)))
     (`("rev-list" . ,_) '(0 . "2"))
     (`("show" . ,_)
      (cons 0 (format "`Unreleased`_\n-----\n\n`0.1.2`_ - %s\n"
                      (format-time-string "%F"))))
-    (`("tag" "--list") (cons 0 release-tests--tags))
-    (`("tag" "--list" . ,_) '(0 . ""))
+    (`("tag" "--list" ,glob)
+     (cons 0 (string-join
+              (seq-filter (lambda (tag)
+                            (string-match-p (wildcard-to-regexp glob) tag))
+                          (split-string release-tests--tags "\n" t))
+              "\n")))
     (`("push" . ,_) (cons release-tests--push-status "rejected"))
     (`("worktree" "remove" "--force" ,dir)
      (delete-directory dir t)
@@ -182,6 +189,28 @@ dated today."
        . ,_)
      '(0 . ""))
     (_ (error "Unexpected git %S" args))))
+
+(defun release-tests--describe (args)
+  "Answer `git describe ARGS' from the tag variables.
+The revision is the last argument, or HEAD when that is an option. HEAD sees
+`release-tests--head-tags' too when it is not the cut. Only --match filters."
+  (let* ((rev (car (last args)))
+         (rev (if (string-prefix-p "-" rev) "HEAD" rev))
+         (glob (cadr (member "--match" args)))
+         (from-head (and (member rev (list "HEAD" release-tests--head-sha))
+                         (not (equal release-tests--head-sha
+                                     release-tests--sha))))
+         (found (seq-find
+                 (lambda (tag)
+                   (or (null glob)
+                       (string-match-p (wildcard-to-regexp glob) tag)))
+                 (append (and from-head release-tests--head-tags)
+                         release-tests--other-tags
+                         (and release-tests--last-tag
+                              (list release-tests--last-tag))))))
+    (if found
+        (cons 0 found)
+      '(128 . "fatal: No names found, cannot describe anything."))))
 
 (defun release-tests--run (buffer program &rest args)
   "Answer PROGRAM ARGS for pass and uv, logging the child environment.
@@ -327,6 +356,41 @@ The pass answer goes into BUFFER."
                (error-message-string
                 (should-error (dag/release-pypi "greened/pkg" nil "0123456")))))
       (should-not release-tests--prompts))))
+
+;; A tag on a parked commit past the cut is not the last release.
+(ert-deftest release-pypi-prompt-describes-the-cut-not-the-head ()
+  (release-tests--with-clone
+    (let* ((head "fedcba9876543210fedcba9876543210fedcba98")
+           (release-tests--head-sha head)
+           (release-tests--remote-sha head)
+           (release-tests--head-tags '("v0.2.0")))
+      (dag/release-pypi "greened/pkg" nil "0123456")
+      (should (equal release-tests--prompts '("v0.1.2")))
+      (should (seq-some (lambda (args)
+                          (and (equal (car args) "describe")
+                               (equal (car (last args)) release-tests--sha)))
+                        (release-tests--git-args))))))
+
+(ert-deftest release-pypi-prompt-ignores-a-tag-off-the-pattern ()
+  (release-tests--with-clone
+    (let ((release-tests--other-tags '("nightly-7")))
+      (dag/release-pypi "greened/pkg" nil "0123456")
+      (should (equal release-tests--prompts '("v0.1.2"))))))
+
+;; A repo whose tags are all off the pattern is a first release, not a
+;; describe failure.
+(ert-deftest release-pypi-prompt-seeds-a-repo-with-only-other-tags ()
+  (release-tests--with-clone
+    (let ((release-tests--last-tag nil)
+          (release-tests--other-tags '("nightly-7"))
+          (release-tests--tags "nightly-7"))
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (_prompt default &rest _)
+                   (push default release-tests--prompts)
+                   "v0.1.2")))
+        (should (equal (dag/release-pypi "greened/pkg" nil "0123456")
+                       "v0.1.2")))
+      (should (equal release-tests--prompts '("v0.1.0"))))))
 
 ;; An older last tag makes the bump differ from the given version, so the
 ;; test can tell which one the prompt offered.
