@@ -317,11 +317,10 @@ so an overlay that sets it must sort before this one in the overlay load.")
          :commands '((:name "check" :command "check" :key "k"
                             :shell-command "bash bin/selftest.sh"))))
 
-  ;; The dotfiles base and this overlay. Neither is registered as a repo,
-  ;; since gaffer's entries for them below set its shell backend. install.sh
-  ;; marks the base, which no overlay has. The overlay's key file sits in
-  ;; emacs/, where quite runs the command, so the command moves to the
-  ;; worktree top first.
+  ;; The dotfiles base and this overlay are registered so gaffer builds them
+  ;; through quite like the repos above. install.sh marks the base, which no
+  ;; overlay has. The overlay's key file sits in emacs/, where quite runs the
+  ;; command, so the command moves to the worktree top first.
   (quite-define-project
    (list :name "dotfiles"
          :build-architecture 'shell
@@ -348,6 +347,14 @@ so an overlay that sets it must sort before this one in the overlay load.")
                             :shell-command "./check.sh build")
                      (:name "check" :command "check" :key "k"
                             :shell-command "./check.sh test"))))
+  (quite-register-repo "greened/dotfiles-public"
+                       :project "dotfiles"
+                       :build-target "dotfiles"
+                       :test-target "dotfiles")
+  (quite-register-repo "greened/dotfiles-personal-config"
+                       :project "personal-config"
+                       :build-target "personal-config"
+                       :test-target "personal-config")
 
   ;; devtools and coding-agent-recipes get projects once each has a check
   ;; entry point.
@@ -428,10 +435,37 @@ so an overlay that sets it must sort before this one in the overlay load.")
                    ("~/lib/dotfiles/*" . "dev")))
     (add-to-list 'magit-git-project-names entry t)))
 
-;;; gaffer: how my personal repos publish. Every one of them is a quite
-;;; project (the block above), so none needs a `gaffer-repo-build-backends'
-;;; override any more -- gaffer's global `quite' backend, which the work overlay
-;;; pins, now reaches them through quite itself. One mechanism per repo.
+;;; gaffer builds and tests through quite. The method lives here, not in
+;;; gaffer core, because it knows quite's repo registry, and in this overlay
+;;; because every machine loads it. gaffer captures the result and quite owns
+;;; the command. Each repo above is registered with quite, so none needs a
+;;; `gaffer-repo-build-backends' override. The nested after-load keeps a quite
+;;; that fails to load from cutting the later gaffer blocks short.
+(with-eval-after-load 'gaffer
+  (with-eval-after-load 'quite
+    (setq gaffer-build-backend 'quite
+          gaffer-test-backend  'quite)
+    (cl-defmethod gaffer-build-run ((_ (eql 'quite)) kind callback &optional item)
+      ;; In a remote worktree the start goes through TRAMP, and could stop at
+      ;; a login prompt nobody sees.
+      (gaffer-refuse-tramp-login default-directory)
+      (gaffer-run-compile
+       kind 'quite callback
+       (lambda ()
+         ;; The partition goes only when asked for, so a build on the default
+         ;; runs with a quite that takes no extra arguments.
+         (apply #'quite-run-repo (gaffer-item-repo item) kind default-directory
+                (gaffer-build-buffer-name item kind)
+                (and gaffer-run-partition
+                     (list (list "--" "--partition" gaffer-run-partition)))))))
+    ;; Only a quite whose `quite-run-repo' takes the extra arguments can pass
+    ;; one on. With an older quite, gaffer refuses the partition instead.
+    (cl-defmethod gaffer-build-run-takes-partition-p ((_ (eql 'quite)))
+      (let ((most (cdr (func-arity #'quite-run-repo))))
+        ;; An advised function reports `many', so that reads as no.
+        (and (numberp most) (>= most 5))))))
+
+;;; gaffer: how my personal repos publish.
 ;;;
 ;;; What they DO need is a publish strategy. Without one the default resolution
 ;;; reaches its last clause -- no PR number, not listed here, branch is not the
@@ -938,31 +972,6 @@ choose where a release stops. `dag/release-pypi' does the work."
   (dolist (repo '("greened/git-project" "greened/git-project-core-plugins"))
     (setf (alist-get repo gaffer-repo-release-strategies nil nil #'equal)
           'pypi)))
-
-;;; Build and test the dotfiles repos with their own scripts rather than the
-;;; fleet-wide backend, which is a build tool that has never heard of them.
-;;;
-;;; Wired because a repo with no entry here can NEVER satisfy the `built'
-;;; gate: unless the entry declares the build `none', gaffer requires the
-;;; `:build-ok' artifact to be PRESENT, an absent one reads as unverified, and
-;;; leaving the stage then takes a human override every single time. A routine
-;;; override is how a gate stops meaning anything, and there is real work to
-;;; check here -- byte-compiling the local packages caught a live error the
-;;; tests missed.
-(with-eval-after-load 'gaffer
-  (setf (alist-get "greened/dotfiles-public" gaffer-repo-build-backends
-                   nil nil #'equal)
-        '(:build-backend shell :build-command "./check.sh build"
-          :test-backend  shell :test-command  "./check.sh test"))
-  ;; This repo has no elisp of its own to compile -- its content is the git hook
-  ;; chain -- so only the test half is real work. The selftest covers the
-  ;; scrub's shape rules and its literal-term builder. With the build `none',
-  ;; the `built' gate needs that test to pass.
-  (setf (alist-get "greened/dotfiles-personal-config" gaffer-repo-build-backends
-                   nil nil #'equal)
-        '(:build-backend none
-          :test-backend  shell
-          :test-command  "git/hooks/scrub-selftest.sh")))
 
 ;;; Calendars for the agenda. The package is declared in the public base; what
 ;;; belongs here is which calendars to read.

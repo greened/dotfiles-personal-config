@@ -280,4 +280,156 @@ none."
     (should (equal (quite-roots-tests--line "personal-config" "check")
                    "export A=b; top=$(git rev-parse --show-toplevel) && cd \"$top\" && ./check.sh test"))))
 
+;;; gaffer builds the dotfiles repos through quite. These run each repo's
+;;; registration from config.el through `quite-run-repo', the call gaffer
+;;; makes.
+
+(defun quite-roots-tests--repo-line (repo project kind)
+  "Return the line gaffer's KIND run for REPO hands `compile'.
+PROJECT and REPO's registration are evaluated from config.el first."
+  (quite-roots-tests--load-env)
+  (let ((dag/quite-dotfiles-env ""))
+    (quite-define-project (quite-roots-tests--project project)))
+  (eval (quite-roots-tests--config-subform
+         (lambda (f) (and (eq (car-safe f) 'quite-register-repo)
+                          (equal (cadr f) repo))))
+        t)
+  (let (line)
+    (cl-letf (((symbol-function 'compile) (lambda (l) (setq line l))))
+      (quite-run-repo repo kind temporary-file-directory "*quite-roots-test*"))
+    line))
+
+(ert-deftest quite-roots-gaffer-runs-dotfiles-public-checks ()
+  (should (equal (quite-roots-tests--repo-line
+                  "greened/dotfiles-public" "dotfiles" 'build)
+                 "./check.sh build"))
+  (should (equal (quite-roots-tests--repo-line
+                  "greened/dotfiles-public" "dotfiles" 'test)
+                 "./check.sh test")))
+
+(ert-deftest quite-roots-gaffer-runs-personal-config-checks ()
+  (should (string-suffix-p
+           " ./check.sh build"
+           (quite-roots-tests--repo-line "greened/dotfiles-personal-config"
+                                         "personal-config" 'build)))
+  (should (string-suffix-p
+           " ./check.sh test"
+           (quite-roots-tests--repo-line "greened/dotfiles-personal-config"
+                                         "personal-config" 'test))))
+
+;;; A backend override would take the repo away from quite again.
+
+(defun quite-roots-tests--override-for (repo)
+  "Return the first top-level form in config.el naming REPO and the overrides.
+The overrides are `gaffer-repo-build-backends'. Matching the whole top-level
+form catches every way to add an entry, such as setf, push, add-to-list or a
+dolist over repos. Only the end of the file is caught, so a read error fails
+the caller rather than reading as no override."
+  (with-temp-buffer
+    (insert-file-contents quite-roots-tests--config)
+    (goto-char (point-min))
+    (catch 'found
+      (condition-case nil
+          (while t
+            (let ((form (read (current-buffer))))
+              (when (and (quite-roots-tests--find
+                          form (lambda (g) (eq g 'gaffer-repo-build-backends)))
+                         (quite-roots-tests--find
+                          form (lambda (g) (equal g repo))))
+                (throw 'found form))))
+        (end-of-file nil)))))
+
+(ert-deftest quite-roots-dotfiles-public-has-no-backend-override ()
+  (should-not (quite-roots-tests--override-for "greened/dotfiles-public")))
+
+(ert-deftest quite-roots-personal-config-has-no-backend-override ()
+  (should-not (quite-roots-tests--override-for
+               "greened/dotfiles-personal-config")))
+
+;;; gaffer's quite backend is defined by config.el's gaffer block. gaffer is
+;;; not installed under -Q either, so these specs load it from GAFFER_DIR,
+;;; or else from ~/projects/gaffer/main or master. A spec fails when gaffer
+;;; does not load. GAFFER_DIR=none skips them.
+
+(defconst quite-roots-tests--gaffer-dir
+  (let ((env (getenv "GAFFER_DIR")))
+    (cond ((equal env "none") 'none)
+          ((and env (not (equal env ""))) (expand-file-name env))
+          (t (seq-find (lambda (d) (file-exists-p (expand-file-name "gaffer.el" d)))
+                       (mapcar #'expand-file-name
+                               '("~/projects/gaffer/main"
+                                 "~/projects/gaffer/master"))))))
+  "The gaffer checkout to load, `none' to skip, or nil when none was found.")
+
+(defun quite-roots-tests--load-gaffer-block ()
+  "Load gaffer and quite, then evaluate config.el's quite backend for gaffer."
+  (quite-roots-tests--need-quite)
+  (when (eq quite-roots-tests--gaffer-dir 'none)
+    (ert-skip "GAFFER_DIR=none"))
+  (unless quite-roots-tests--gaffer-dir
+    (ert-fail "no gaffer checkout at ~/projects/gaffer/main or master"))
+  (let ((load-path (cons quite-roots-tests--gaffer-dir load-path)))
+    (require 'gaffer))
+  (eval (quite-roots-tests--config-subform
+         (lambda (f) (and (eq (car-safe f) 'with-eval-after-load)
+                          (equal (cadr f) ''gaffer)
+                          (quite-roots-tests--find
+                           f (lambda (g) (eq g 'gaffer-build-run))))))
+        t))
+
+(ert-deftest quite-roots-gaffer-defaults-to-the-quite-backend ()
+  (quite-roots-tests--load-gaffer-block)
+  (should (eq gaffer-build-backend 'quite))
+  (should (eq gaffer-test-backend 'quite)))
+
+(ert-deftest quite-roots-gaffer-quite-backend-runs-the-repo-check ()
+  (quite-roots-tests--load-gaffer-block)
+  ;; Registers the repo with quite.
+  (quite-roots-tests--repo-line "greened/dotfiles-public" "dotfiles" 'test)
+  (let ((item (gaffer-item-create :repo "greened/dotfiles-public"
+                                  :branch "x"))
+        (default-directory temporary-file-directory)
+        (gaffer--run-buffer-name nil)
+        line)
+    (cl-letf (((symbol-function 'compile) (lambda (l) (setq line l) nil)))
+      (gaffer-build-run 'quite 'test #'ignore item))
+    (should (equal line "./check.sh test"))))
+
+;;; A build on a partition hands it to quite after `--', and only a quite
+;;; that takes the extra arguments is offered one.
+
+(defun quite-roots-tests--run-repo-args (partition)
+  "Return the arguments gaffer's quite build passes `quite-run-repo'.
+PARTITION is bound as `gaffer-run-partition'."
+  (quite-roots-tests--load-gaffer-block)
+  (let ((item (gaffer-item-create :repo "greened/dotfiles-public"
+                                  :branch "x"))
+        (default-directory temporary-file-directory)
+        (gaffer--run-buffer-name nil)
+        (gaffer-run-partition partition)
+        args)
+    (cl-letf (((symbol-function 'quite-run-repo)
+               (lambda (&rest a) (setq args a) nil)))
+      (gaffer-build-run 'quite 'build #'ignore item))
+    args))
+
+(ert-deftest quite-roots-gaffer-quite-build-passes-the-partition ()
+  (should (equal (last (quite-roots-tests--run-repo-args "p1"))
+                 '(("--" "--partition" "p1")))))
+
+(ert-deftest quite-roots-gaffer-quite-build-passes-no-partition-by-default ()
+  (should (= (length (quite-roots-tests--run-repo-args nil)) 4)))
+
+(ert-deftest quite-roots-gaffer-quite-takes-a-partition-by-arity ()
+  (quite-roots-tests--load-gaffer-block)
+  (let ((most (cdr (func-arity #'quite-run-repo))))
+    (should (eq (and (gaffer-build-run-takes-partition-p 'quite) t)
+                (and (numberp most) (>= most 5)))))
+  (cl-letf (((symbol-function 'quite-run-repo) (lambda (_a _b _c _d &optional _e))))
+    (should (gaffer-build-run-takes-partition-p 'quite)))
+  (cl-letf (((symbol-function 'quite-run-repo) (lambda (_a _b _c _d))))
+    (should-not (gaffer-build-run-takes-partition-p 'quite)))
+  (cl-letf (((symbol-function 'quite-run-repo) (lambda (&rest _))))
+    (should-not (gaffer-build-run-takes-partition-p 'quite))))
+
 ;;; quite-roots-tests.el ends here
