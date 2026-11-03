@@ -738,7 +738,8 @@ anything irreversible. Run that read, the build and the upload through
 `dag/release--run', so a pinentry prompt or a slow upload leaves Emacs usable.
 
 Refuse rather than reset when the clone is not current. A release is the wrong
-place to discard local state.
+place to discard local state. Refuse too when a release tag sits between COMMIT
+and the head, since the prompt would offer a version below it.
 
 Refuse when the changelog at the cut point does not head this version dated
 today, and say how to fix it. The date goes stale between drafting the notes
@@ -785,8 +786,16 @@ and the release is cut again at it. A retry on a later day refuses too."
                                             landed "HEAD")))
         (error "gaffer release: %s is not an ancestor of the head"
                (substring landed 0 8)))
-      ;; Describe the cut, not HEAD, so a tag on a parked commit is not taken
-      ;; as the last release. The pattern is a glob, which --match takes as is.
+      ;; Describing the cut would offer a version below any release tag on a
+      ;; parked commit. --list matches the glob as describe's --match does.
+      (let ((newer (dag/release--git! "tag" "--merged" "HEAD"
+                                      "--no-merged" landed
+                                      "--list" gaffer-release-tag-pattern)))
+        (unless (string-empty-p newer)
+          (error "gaffer release: release tags past %s: %s. Cut at or after the newest"
+                 (substring landed 0 8)
+                 (string-join (split-string newer "\n" t) ", "))))
+      ;; The pattern is a glob, which --match takes as is.
       (let* ((last (let ((described (dag/release--git
                                      "describe" "--tags" "--abbrev=0"
                                      "--match" gaffer-release-tag-pattern

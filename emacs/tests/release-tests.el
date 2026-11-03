@@ -181,6 +181,14 @@ dated today."
                             (string-match-p (wildcard-to-regexp glob) tag))
                           (split-string release-tests--tags "\n" t))
               "\n")))
+    (`("tag" "--merged" "HEAD" "--no-merged" ,cut "--list" ,glob)
+     (cons 0 (if (equal cut release-tests--head-sha)
+                 ""
+               (string-join
+                (seq-filter (lambda (tag)
+                              (string-match-p (wildcard-to-regexp glob) tag))
+                            release-tests--head-tags)
+                "\n"))))
     (`("push" . ,_) (cons release-tests--push-status "rejected"))
     (`("worktree" "remove" "--force" ,dir)
      (delete-directory dir t)
@@ -357,19 +365,41 @@ The pass answer goes into BUFFER."
                 (should-error (dag/release-pypi "greened/pkg" nil "0123456")))))
       (should-not release-tests--prompts))))
 
-;; A tag on a parked commit past the cut is not the last release.
+;; With the head past the cut, the only release tag is before the cut.
 (ert-deftest release-pypi-prompt-describes-the-cut-not-the-head ()
   (release-tests--with-clone
     (let* ((head "fedcba9876543210fedcba9876543210fedcba98")
            (release-tests--head-sha head)
-           (release-tests--remote-sha head)
-           (release-tests--head-tags '("v0.2.0")))
+           (release-tests--remote-sha head))
       (dag/release-pypi "greened/pkg" nil "0123456")
       (should (equal release-tests--prompts '("v0.1.2")))
       (should (seq-some (lambda (args)
                           (and (equal (car args) "describe")
                                (equal (car (last args)) release-tests--sha)))
                         (release-tests--git-args))))))
+
+;; Describing the cut would offer v0.1.2, below the v0.2.0 already released.
+(ert-deftest release-pypi-refuses-a-cut-behind-a-release ()
+  (release-tests--with-clone
+    (let* ((head "fedcba9876543210fedcba9876543210fedcba98")
+           (release-tests--head-sha head)
+           (release-tests--remote-sha head)
+           (release-tests--head-tags '("v0.2.0"))
+           (err (should-error (dag/release-pypi "greened/pkg" nil "0123456")
+                              :type 'error)))
+      (should (string-match-p "release tags past 01234567: v0\\.2\\.0"
+                              (error-message-string err)))
+      (should-not release-tests--prompts)
+      (should-not (release-tests--runs)))))
+
+(ert-deftest release-pypi-ignores-a-parked-tag-off-the-pattern ()
+  (release-tests--with-clone
+    (let* ((head "fedcba9876543210fedcba9876543210fedcba98")
+           (release-tests--head-sha head)
+           (release-tests--remote-sha head)
+           (release-tests--head-tags '("nightly-8")))
+      (dag/release-pypi "greened/pkg" nil "0123456")
+      (should (equal release-tests--prompts '("v0.1.2"))))))
 
 (ert-deftest release-pypi-prompt-ignores-a-tag-off-the-pattern ()
   (release-tests--with-clone
