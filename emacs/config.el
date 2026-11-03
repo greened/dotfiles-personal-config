@@ -18,7 +18,10 @@
 
 ;;; cc-mode: my personal C style and its guesser entries.
 
-(with-eval-after-load 'cc-styles
+(use-package cc-styles
+  :ensure nil
+  :defer t
+  :config
   (defconst my-c-style
     '((c-tab-always-indent        . t)
       (c-comment-only-line-offset . 4)
@@ -124,14 +127,80 @@
     "MIRV C Style")
   (c-add-style "mirv-c-style" mirv-c-style))
 
-(with-eval-after-load 'cc-mode
+(use-package cc-mode
+  :ensure nil
+  :defer t
+  :config
   (add-to-list 'my-c-styles-alist
 	       '(".*/.*mirv/.*\\.[ch]$" . "mirv-c-style")))
 
-;;; quite: MIRV build hydra.
+;;; quite: where my projects live on each machine, the MIRV build hydra and
+;;; the projects gaffer builds.
 
+(use-package quite
+  :ensure nil
+  :defer t
+  :preface
+  ;; Where my projects live on each machine. Every descriptor below takes its
+  ;; :root-list from here.
+  (defvar dag/quite-host-roots
+    (list
+     (list 'mac
+           (lambda ()
+             (and (eq system-type 'darwin) (equal user-login-name "dag")))
+           '("/Users/dag/projects" "~/lib"))
+     ;; Both the build VM and my personal laptop keep their checkouts under
+     ;; ~/projects. The path uses ~ rather than the full one, which would
+     ;; put the VM's home directory in a public repo.
+     (list 'linux
+           (lambda () (eq system-type 'gnu/linux))
+           '("~/projects" "~/lib")))
+    "Where my quite projects live on each machine, as (HOST TEST ROOTS).
+The first entry whose TEST returns non-nil gives the ROOTS. The TESTs look at
+the machine Emacs runs on, so a TRAMP buffer on another host still gets the
+local machine's roots.")
 
-(with-eval-after-load 'quite
+  (defun dag/quite-roots ()
+    "Return this machine's project roots from `dag/quite-host-roots'.
+Return nil on a machine the table does not name. quite then finds a project
+only from a buffer visiting one of its files, and asks for a root otherwise,
+which is better than a guessed path."
+    (nth 2 (seq-find (lambda (entry) (funcall (nth 1 entry)))
+                     dag/quite-host-roots)))
+
+  (defun dag/quite-descriptor (dir key-files &optional default-worktree)
+    "Return a quite descriptor for the repo in DIR, marked by KEY-FILES.
+Most of my repos are git-project umbrellas, with every worktree one level
+below DIR. quite's root search tests key files directly under DIR only, so
+also list them under DEFAULT-WORKTREE (\"main\" by default). From a buffer
+visiting a file in a worktree, the plain KEY-FILES match first, so quite
+builds that worktree. From a buffer visiting no file, such as Magit or Dired,
+quite builds DEFAULT-WORKTREE."
+    (let ((wt (or default-worktree "main")))
+      (list :project-dir dir
+            :root-list (dag/quite-roots)
+            :key-files (append key-files
+                               (mapcar (lambda (f) (concat wt "/" f))
+                                       key-files)))))
+
+  (defun dag/quite-overlay-descriptor (overlay key-file)
+    "Return a quite descriptor for the dotfiles overlay OVERLAY, marked by KEY-FILE.
+The main checkout is dotfiles-overlays/OVERLAY, but its worktrees sit under
+dotfiles-wt with names quite cannot match to OVERLAY. So the descriptor
+matches dotfiles-wt and tells the overlays apart by KEY-FILE, which only
+OVERLAY has. The second key file climbs from dotfiles-wt to the main
+checkout, which quite builds for a buffer in no worktree of OVERLAY."
+    (list :project-dir "dotfiles-wt"
+          :root-list (dag/quite-roots)
+          :key-files (list key-file
+                           (concat "../dotfiles-overlays/" overlay "/" key-file))))
+
+  (defvar dag/quite-dotfiles-env ""
+    "Shell text that sets up a machine's Emacs for a check.sh run.
+An overlay sets it. The dotfiles projects read it when they are defined,
+so an overlay that sets it must sort before this one in the overlay load.")
+  :config
+  ;; MIRV build hydra.
   (setq git-mirv-name "mirv")
 
   ;; Prefixes: list order is the C-u dispatch index (release = no prefix,
@@ -166,69 +235,8 @@
 	      mirv-build-hydra-heads)))
 
   (define-key quite-command-map (kbd "Mh")
-		   (lambda () (interactive) (mirv-hydra-build/body))))
+		   (lambda () (interactive) (mirv-hydra-build/body)))
 
-;;; quite: where my projects live on each machine. Every descriptor below
-;;; takes its :root-list from here.
-
-(defvar dag/quite-host-roots
-  (list
-   (list 'mac
-         (lambda ()
-           (and (eq system-type 'darwin) (equal user-login-name "dag")))
-         '("/Users/dag/projects" "~/lib"))
-   ;; Both the build VM and my personal laptop keep their checkouts under
-   ;; ~/projects. The path uses ~ rather than the full one, which would
-   ;; put the VM's home directory in a public repo.
-   (list 'linux
-         (lambda () (eq system-type 'gnu/linux))
-         '("~/projects" "~/lib")))
-  "Where my quite projects live on each machine, as (HOST TEST ROOTS).
-The first entry whose TEST returns non-nil gives the ROOTS. The TESTs look at
-the machine Emacs runs on, so a TRAMP buffer on another host still gets the
-local machine's roots.")
-
-(defun dag/quite-roots ()
-  "Return this machine's project roots from `dag/quite-host-roots'.
-Return nil on a machine the table does not name. quite then finds a project
-only from a buffer visiting one of its files, and asks for a root otherwise,
-which is better than a guessed path."
-  (nth 2 (seq-find (lambda (entry) (funcall (nth 1 entry)))
-                   dag/quite-host-roots)))
-
-(defun dag/quite-descriptor (dir key-files &optional default-worktree)
-  "Return a quite descriptor for the repo in DIR, marked by KEY-FILES.
-Most of my repos are git-project umbrellas, with every worktree one level
-below DIR. quite's root search tests key files directly under DIR only, so
-also list them under DEFAULT-WORKTREE (\"main\" by default). From a buffer
-visiting a file in a worktree, the plain KEY-FILES match first, so quite
-builds that worktree. From a buffer visiting no file, such as Magit or Dired,
-quite builds DEFAULT-WORKTREE."
-  (let ((wt (or default-worktree "main")))
-    (list :project-dir dir
-          :root-list (dag/quite-roots)
-          :key-files (append key-files
-                             (mapcar (lambda (f) (concat wt "/" f))
-                                     key-files)))))
-
-(defun dag/quite-overlay-descriptor (overlay key-file)
-  "Return a quite descriptor for the dotfiles overlay OVERLAY, marked by KEY-FILE.
-The main checkout is dotfiles-overlays/OVERLAY, but its worktrees sit under
-dotfiles-wt with names quite cannot match to OVERLAY. So the descriptor
-matches dotfiles-wt and tells the overlays apart by KEY-FILE, which only
-OVERLAY has. The second key file climbs from dotfiles-wt to the main
-checkout, which quite builds for a buffer in no worktree of OVERLAY."
-  (list :project-dir "dotfiles-wt"
-        :root-list (dag/quite-roots)
-        :key-files (list key-file
-                         (concat "../dotfiles-overlays/" overlay "/" key-file))))
-
-(defvar dag/quite-dotfiles-env ""
-  "Shell text that sets up a machine's Emacs for a check.sh run.
-An overlay sets it. The dotfiles projects read it when they are defined,
-so an overlay that sets it must sort before this one in the overlay load.")
-
-(with-eval-after-load 'quite
   ;; Every one of these is a shell project: quite runs the command's
   ;; :shell-command and nothing else. They have a single build flavor, so none
   ;; declares :prefixes or :transforms -- the lone flavor is named by :target
@@ -429,19 +437,27 @@ so an overlay that sets it must sort before this one in the overlay load.")
 ;;; Name the git-project section for each repo with more than one, so
 ;;; magit-git-project needn't ask.
 
-(with-eval-after-load 'magit-git-project
+(use-package magit-git-project
+  :ensure nil
+  :defer t
+  :config
   (dolist (entry '(("~/projects/devtools/*" . "dev")
                    ("~/projects/gazette/*" . "dev")
                    ("~/lib/dotfiles/*" . "dev")))
     (add-to-list 'magit-git-project-names entry t)))
 
-;;; gaffer builds and tests through quite. The method lives here, not in
-;;; gaffer core, because it knows quite's repo registry, and in this overlay
-;;; because every machine loads it. gaffer captures the result and quite owns
-;;; the command. Each repo above is registered with quite, so none needs a
-;;; `gaffer-repo-build-backends' override. The nested after-load keeps a quite
-;;; that fails to load from cutting the later gaffer blocks short.
-(with-eval-after-load 'gaffer
+;;; gaffer: the quite backend, how my repos publish and where two of them live.
+
+(use-package gaffer
+  :ensure nil
+  :defer t
+  :config
+  ;; gaffer builds and tests through quite. The method lives here, not in
+  ;; gaffer core, because it knows quite's repo registry, and in this overlay
+  ;; because every machine loads it. gaffer captures the result and quite owns
+  ;; the command. Each repo above is registered with quite, so none needs a
+  ;; `gaffer-repo-build-backends' override. The nested after-load keeps a quite
+  ;; that fails to load from cutting the rest of this block short.
   (with-eval-after-load 'quite
     (setq gaffer-build-backend 'quite
           gaffer-test-backend  'quite)
@@ -463,51 +479,49 @@ so an overlay that sets it must sort before this one in the overlay load.")
     (cl-defmethod gaffer-build-run-takes-partition-p ((_ (eql 'quite)))
       (let ((most (cdr (func-arity #'quite-run-repo))))
         ;; An advised function reports `many', so that reads as no.
-        (and (numberp most) (>= most 5))))))
+        (and (numberp most) (>= most 5)))))
 
-;;; gaffer: how my personal repos publish.
-;;;
-;;; What they DO need is a publish strategy. Without one the default resolution
-;;; reaches its last clause -- no PR number, not listed here, branch is not the
-;;; default branch -- and picks `open-pr', which would open a pull request on
-;;; repos that have never had one. They all land the same way: fast-forward the
-;;; default branch.
-
-;;; The dotfiles repos land the same way, and are listed here for the same
-;;; reason: without an entry the default resolution sees a dev branch that is
-;;; not the default branch and picks `open-pr', which would open a pull request
-;;; on repos that have never had one. The work overlay adds its own, since
-;;; naming it here would put the employer in a public repo. A private overlay
-;;; adds its own entry too, so this public overlay names no private repo.
-(with-eval-after-load 'gaffer
+  ;; How my personal repos publish.
+  ;;
+  ;; They need a publish strategy. Without one the default resolution reaches
+  ;; its last clause (no PR number, not listed here, branch is not the default
+  ;; branch) and picks `open-pr', which would open a pull request on
+  ;; repos that have never had one. They all land the same way: fast-forward the
+  ;; default branch.
+  ;;
+  ;; The dotfiles repos land the same way, and are listed here for the same
+  ;; reason: without an entry the default resolution sees a dev branch that is
+  ;; not the default branch and picks `open-pr', which would open a pull request
+  ;; on repos that have never had one. The work overlay adds its own, since
+  ;; naming it here would put the employer in a public repo. A private overlay
+  ;; adds its own entry too, so this public overlay names no private repo.
   (dolist (repo '("greened/gaffer" "greened/prevue" "greened/gazette"
                   "greened/quarry" "greened/slack-attention" "greened/quite"
                   "greened/git-project" "greened/git-project-core-plugins"
                   "greened/magit-git-project" "greened/tokenomics"
                   "greened/dotfiles-public" "greened/dotfiles-personal-config"))
     (setf (alist-get repo gaffer-repo-publish-strategies nil nil #'equal)
-          'ff-merge)))
+          'ff-merge))
 
-;;; gaffer: where git-project and core-plugins live on disk. Without an entry
-;;; `gaffer--repo-path' raises, and that costs two separate things. Worktree
-;;; resolution goes away, so an item's `worktree' has to be set by hand. And
-;;; `gaffer--released-p' loses the fallback it reads once a worktree is torn
-;;; down, which is normal after landing.
-;;;
-;;; The second one is the dangerous half. That call sits inside
-;;; `ignore-errors', so the raise is swallowed and the answer is nil -- and nil
-;;; does not merely park the item, it also stops `gaffer-release' recognising a
-;;; cut somebody already made. A missing path turns a no-op into a DUPLICATE
-;;; release.
-;;;
-;;; The path is the WORKTREE, not the directory above it. Both repos use the
-;;; nested layout, so the parent holds the bare store and no working tree at
-;;; all; git run there reports "not a git repository". A worktree shares the
-;;; object store, so tags resolve identically either way.
-;;;
-;;; These are laptop paths, used when no other overlay names a clone. The
-;;; release handler reads this same entry, and it may be remote.
-(with-eval-after-load 'gaffer
+  ;; Where git-project and core-plugins live on disk. Without an entry
+  ;; `gaffer--repo-path' raises, and that costs two separate things. Worktree
+  ;; resolution goes away, so an item's `worktree' has to be set by hand. And
+  ;; `gaffer--released-p' loses the fallback it reads once a worktree is torn
+  ;; down, which is normal after landing.
+  ;;
+  ;; The second one is the dangerous half. That call sits inside
+  ;; `ignore-errors', so the raise is swallowed and the answer is nil. And nil
+  ;; does not merely park the item. It also stops `gaffer-release' recognising
+  ;; a cut somebody already made, so a missing path turns a no-op into a
+  ;; duplicate release.
+  ;;
+  ;; The path is the worktree, not the directory above it. Both repos use the
+  ;; nested layout, so the parent holds the bare store and no working tree at
+  ;; all, and git run there reports "not a git repository". A worktree shares the
+  ;; object store, so tags resolve identically either way.
+  ;;
+  ;; These are laptop paths, used when no other overlay names a clone. The
+  ;; release handler reads this same entry, and it may be remote.
   (dolist (name '("git-project" "git-project-core-plugins"))
     (let ((repo (concat "greened/" name)))
       (unless (assoc repo gaffer-repo-paths)
@@ -995,7 +1009,10 @@ choose where a release stops. `dag/release-pypi' does the work."
 ;;; The work calendar is not here. It goes in the work overlay once it has a
 ;;; published iCalendar address, and joins this same alist.
 
-(with-eval-after-load 'agenda-feeds
+(use-package agenda-feeds
+  :ensure nil
+  :defer t
+  :config
   (setq agenda-feeds-calendars
         (list (cons 'personal
                     (lambda ()
@@ -1005,7 +1022,10 @@ choose where a release stops. `dag/release-pypi' does the work."
 
 ;;; Notmuch: LLVM project and C++ standards mailing-list saved searches.
 
-(with-eval-after-load 'notmuch
+(use-package notmuch
+  :ensure nil
+  :defer t
+  :config
   (my-notmuch-add-search "llvm-feedback" "f" "tag:llvm-feedback and not tag:deleted and not tag:trash" 'tree)
   (my-notmuch-add-search "llvm-iropt" "I" "tag:llvm-ir-opt and not tag:deleted and not tag:trash" 'tree)
   (my-notmuch-add-search "llvm-infrastructure" "F" "tag:llvm-infrastructure and not tag:deleted and not tag:trash" 'tree)

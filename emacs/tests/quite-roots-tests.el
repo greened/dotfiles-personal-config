@@ -12,17 +12,27 @@
   (expand-file-name "../config.el"
                     (file-name-directory (or load-file-name buffer-file-name))))
 
+(defun quite-roots-tests--find (form pred)
+  "Return the first subform of FORM satisfying PRED, or nil."
+  (cond ((funcall pred form) form)
+        ((consp form) (or (quite-roots-tests--find (car form) pred)
+                          (quite-roots-tests--find (cdr form) pred)))))
+
 (defun quite-roots-tests--load (kind name)
-  "Evaluate the top-level KIND form (`defun' or `defvar') NAME from config.el."
+  "Evaluate the KIND form (`defun' or `defvar') NAME from config.el.
+It need not be at top level, since a use-package block can hold it."
   (with-temp-buffer
     (insert-file-contents quite-roots-tests--config)
     (goto-char (point-min))
     (catch 'found
       (condition-case nil
           (while t
-            (let ((form (read (current-buffer))))
-              (when (and (eq (car-safe form) kind) (eq (cadr form) name))
-                (throw 'found (eval form t)))))
+            (let ((found (quite-roots-tests--find
+                          (read (current-buffer))
+                          (lambda (f) (and (eq (car-safe f) kind)
+                                           (eq (car-safe (cdr f)) name))))))
+              (when found
+                (throw 'found (eval found t)))))
         (end-of-file (error "No %s %s in config.el" kind name))))))
 
 (quite-roots-tests--load 'defvar 'dag/quite-host-roots)
@@ -222,12 +232,6 @@ none."
 ;;; The dotfiles projects read `dag/quite-dotfiles-env' when config.el
 ;;; defines them.
 
-(defun quite-roots-tests--find (form pred)
-  "Return the first subform of FORM satisfying PRED, or nil."
-  (cond ((funcall pred form) form)
-        ((consp form) (or (quite-roots-tests--find (car form) pred)
-                          (quite-roots-tests--find (cdr form) pred)))))
-
 (defun quite-roots-tests--config-subform (pred)
   "Return the first form in config.el, at any depth, satisfying PRED."
   (with-temp-buffer
@@ -372,7 +376,7 @@ the caller rather than reading as no override."
     (require 'gaffer))
   (eval (quite-roots-tests--config-subform
          (lambda (f) (and (eq (car-safe f) 'with-eval-after-load)
-                          (equal (cadr f) ''gaffer)
+                          (equal (cadr f) ''quite)
                           (quite-roots-tests--find
                            f (lambda (g) (eq g 'gaffer-build-run))))))
         t))
