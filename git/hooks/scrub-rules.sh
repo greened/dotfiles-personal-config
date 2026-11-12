@@ -1,7 +1,8 @@
 # Shape rules for the employer-information scrub.  Sourced, not run.
 #
-# Sets two variables:
+# Sets three variables:
 #   shape_re    egrep alternation matching a shape that names nobody
+#   shape_re_named  the part of shape_re without the bare PR numbers
 #   shape_skip  sed -E expression blanking allowlisted tokens before matching
 #
 # These live here rather than inline in `_chain' so that the hook and
@@ -155,18 +156,23 @@ scrub_term_hits() {   # FILE, stdin -> matched terms, one per line
 #
 # Explicit boundaries CONSUME a character, unlike `\b'.  Harmless for detection
 # and for `grep -c', and `grep -o' output gains a boundary character.
-shape_re='(^|[^A-Za-z0-9])[a-z][a-z0-9]{1,20}-cb([^A-Za-z0-9]|$)'   # work handle
-shape_re="$shape_re"'|(^|[^A-Za-z0-9/])/cb/[a-z]'                   # work NFS root
-shape_re="$shape_re"'|(^|[^A-Za-z0-9])[A-Z]{2,6}-[0-9]{4,6}([^A-Za-z0-9]|$)'  # Jira key
+#
+# `shape_re_named' leaves out the bare PR numbers. A bare number already in
+# history names nothing, so the history scan counts only this subset. The
+# commit scrub uses all of `shape_re'.
+shape_re_named='(^|[^A-Za-z0-9])[a-z][a-z0-9]{1,20}-cb([^A-Za-z0-9]|$)'   # work handle
+shape_re_named="$shape_re_named"'|(^|[^A-Za-z0-9/])/cb/[a-z]'             # work NFS root
+shape_re_named="$shape_re_named"'|(^|[^A-Za-z0-9])[A-Z]{2,6}-[0-9]{4,6}([^A-Za-z0-9]|$)'  # Jira key
 # A PR number of 4 to 6 digits (4+ in a field), written `#NNNN', `PR#NNNN',
-# `owner/repo#NNNN' or as a forge plist, alist or JSON field.
+# `owner/repo#NNNN' or as a forge plist, alist or JSON field. Only
+# `owner/repo#NNNN' names a repo.
 # Its edges keep out a double-quoted hex colour, an HTML entity, TRAMP's
 # host#port and any other `Word#NNNN'. An unquoted all-digit colour cannot be
 # told from a PR number, so it is caught.
-shape_re="$shape_re"'|(^|[^A-Za-z0-9"&])#[0-9]{4,6}([^0-9A-Za-z]|$)'
+shape_re_named="$shape_re_named"'|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]{4,6}([^0-9A-Za-z]|$)'
+shape_re="$shape_re_named"'|(^|[^A-Za-z0-9"&])#[0-9]{4,6}([^0-9A-Za-z]|$)'
 shape_re="$shape_re"'|"#[0-9]{4,6}([^0-9A-Za-z\"]|$)|"#[0-9]{5}"'
 shape_re="$shape_re"'|(PR|pr)#[0-9]{4,6}([^0-9A-Za-z]|$)'
-shape_re="$shape_re"'|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]{4,6}([^0-9A-Za-z]|$)'
 shape_re="$shape_re"'|:number [0-9]{4,}|:pr-number [0-9]{4,}|\(number \. [0-9]{4,}\)|"number": ?[0-9]{4,}'
 
 # Print the shape-rule hits in stdin, one matched TOKEN per line.

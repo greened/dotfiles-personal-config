@@ -207,5 +207,32 @@ else
   pass=$((pass + 1))
 fi
 
+# check_named DESCRIPTION EXPECTED INPUT
+#   EXPECTED is 1 when shape_re_named should match INPUT, else 0.
+check_named() {
+  local desc="$1" expected="$2" input="$3" got
+  got="$(printf '%s\n' "$input" | sed -E "$shape_skip" | grep -cE "$shape_re_named" || true)"
+  if [ "$got" = "$expected" ]; then
+    printf 'ok    %s\n' "$desc"
+    pass=$((pass + 1))
+  else
+    printf 'FAIL  %s\n      expected %s, got %s\n' "$desc" "$expected" "$got" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+check_named "the named subset skips a bare PR number" 0 "merged in #$pr today"
+check_named "the named subset skips a PR# number"     0 "see PR#$pr"
+check_named "the named subset skips a plist number"   0 "(:number $pr :title x)"
+check_named "the named subset skips a quoted number"  0 "label \"#$pr here"
+check_named "the named subset skips a :pr-number"     0 "(:pr-number $pr)"
+check_named "the named subset skips an alist number"  0 "((number . $pr))"
+check_named "the named subset skips a JSON number"    0 '{"number": '"$pr"'}'
+check_named "the named subset keeps a cross-repo PR"  1 "see acme/repo#$pr"
+check_named "the named subset keeps a work handle"    1 "github: $handle"
+check_named "the named subset keeps the NFS root"     1 "lives in $root"
+check_named "the named subset keeps an issue key"     1 "fixes $key today"
+check_named "the named subset honours the allowlist"  0 "an issue key such as ACME-1234"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
