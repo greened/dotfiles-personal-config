@@ -134,26 +134,16 @@ It need not be at top level, since a use-package block can hold it."
                    '("emacs/config.el"
                      "../dotfiles-overlays/pc/emacs/config.el")))))
 
-(defmacro quite-roots-tests--in-tree (&rest body)
-  "Run BODY with `lib' bound to a scratch copy of the dotfiles layout.
-The host roots name only that copy."
-  (declare (indent 0))
+(defmacro quite-roots-tests--with-tree (files &rest body)
+  "Run BODY with `lib' bound to a scratch tree holding FILES, empty.
+The host roots name only that tree."
+  (declare (indent 1))
   `(let* ((top (make-temp-file "quite-roots-tests" t))
           (lib (expand-file-name "lib" top))
           (dag/quite-host-roots (list (list 'test (lambda () t) (list lib)))))
      (unwind-protect
          (progn
-           (dolist (f '("dotfiles/main/install.sh" "dotfiles/main/check.sh"
-                        "dotfiles/wt/install.sh" "dotfiles/wt/emacs/x.el"
-                        "dotfiles-overlays/personal-config/check.sh"
-                        "dotfiles-overlays/personal-config/emacs/config.el"
-                        "dotfiles-overlays/other/check.sh"
-                        "dotfiles-overlays/other/emacs/other.el"
-                        "dotfiles-wt/pc-x/check.sh"
-                        "dotfiles-wt/pc-x/emacs/config.el"
-                        "dotfiles-wt/pc-x/git/hooks/h.sh"
-                        "dotfiles-wt/other-x/check.sh"
-                        "dotfiles-wt/other-x/emacs/other.el"))
+           (dolist (f ,files)
              (let ((path (expand-file-name f lib)))
                (make-directory (file-name-directory path) t)
                (write-region "" nil path)))
@@ -163,6 +153,46 @@ The host roots name only that copy."
                     (string-prefix-p top (buffer-file-name b)))
            (kill-buffer b)))
        (delete-directory top t))))
+
+(defmacro quite-roots-tests--in-tree (&rest body)
+  "Run BODY with `lib' bound to a scratch copy of the dotfiles layout.
+The overlays are flat clones, with their worktrees under dotfiles-wt."
+  (declare (indent 0))
+  `(quite-roots-tests--with-tree
+       '("dotfiles/main/install.sh" "dotfiles/main/check.sh"
+         "dotfiles/wt/install.sh" "dotfiles/wt/emacs/x.el"
+         "dotfiles-overlays/personal-config/check.sh"
+         "dotfiles-overlays/personal-config/emacs/config.el"
+         "dotfiles-overlays/other/check.sh"
+         "dotfiles-overlays/other/emacs/other.el"
+         "dotfiles-wt/pc-x/check.sh"
+         "dotfiles-wt/pc-x/emacs/config.el"
+         "dotfiles-wt/pc-x/git/hooks/h.sh"
+         "dotfiles-wt/other-x/check.sh"
+         "dotfiles-wt/other-x/emacs/other.el")
+     ,@body))
+
+(defmacro quite-roots-tests--in-umbrella-tree (&rest body)
+  "Run BODY with `lib' bound to a scratch dotfiles layout of umbrellas.
+Each overlay holds main/ and its worktree x/, and dotfiles-wt is gone."
+  (declare (indent 0))
+  `(quite-roots-tests--with-tree
+       '("dotfiles/main/install.sh" "dotfiles/main/check.sh"
+         "dotfiles/wt/install.sh" "dotfiles/wt/emacs/x.el"
+         "dotfiles-overlays/personal-config/.git"
+         "dotfiles-overlays/personal-config/main/.git"
+         "dotfiles-overlays/personal-config/main/check.sh"
+         "dotfiles-overlays/personal-config/main/emacs/config.el"
+         "dotfiles-overlays/personal-config/x/.git"
+         "dotfiles-overlays/personal-config/x/check.sh"
+         "dotfiles-overlays/personal-config/x/emacs/config.el"
+         "dotfiles-overlays/personal-config/x/git/hooks/h.sh"
+         "dotfiles-overlays/other/.git"
+         "dotfiles-overlays/other/main/.git"
+         "dotfiles-overlays/other/main/emacs/other.el"
+         "dotfiles-overlays/other/x/.git"
+         "dotfiles-overlays/other/x/emacs/other.el")
+     ,@body))
 
 (defun quite-roots-tests--build-dir (descriptor file)
   "Return the directory quite runs DESCRIPTOR's commands in.
@@ -228,6 +258,57 @@ none."
                       d (expand-file-name "dotfiles-wt/pc-x/emacs/config.el"
                                           lib))
                      (expand-file-name "dotfiles/main/" lib))))))
+
+;;; The same, with every overlay a git-project umbrella.
+
+(ert-deftest quite-roots-overlay-umbrella-descriptor-shape ()
+  (quite-roots-tests--in-umbrella-tree
+    (let ((d (dag/quite-overlay-descriptor "personal-config" "emacs/config.el")))
+      (should (equal (plist-get d :project-dir)
+                     "dotfiles-overlays/personal-config"))
+      (should (equal (plist-get d :root-list) (list lib)))
+      (should (equal (plist-get d :key-files)
+                     '("emacs/config.el" "main/emacs/config.el"))))))
+
+(ert-deftest quite-roots-overlay-umbrella-worktree-builds-itself ()
+  (quite-roots-tests--need-quite)
+  (quite-roots-tests--in-umbrella-tree
+    (should (equal (quite-roots-tests--build-dir
+                    (dag/quite-overlay-descriptor "personal-config"
+                                                  "emacs/config.el")
+                    (expand-file-name
+                     "dotfiles-overlays/personal-config/x/git/hooks/h.sh" lib))
+                   (expand-file-name "dotfiles-overlays/personal-config/x/emacs/"
+                                     lib)))))
+
+(ert-deftest quite-roots-overlay-umbrella-elsewhere-builds-main ()
+  (quite-roots-tests--need-quite)
+  (quite-roots-tests--in-umbrella-tree
+    (let ((main (expand-file-name
+                 "dotfiles-overlays/personal-config/main/emacs/" lib))
+          (d (dag/quite-overlay-descriptor "personal-config"
+                                           "emacs/config.el")))
+      (should (equal (quite-roots-tests--build-dir
+                      d (expand-file-name "dotfiles-overlays/other/x/emacs/other.el"
+                                          lib))
+                     main))
+      (should (equal (quite-roots-tests--build-dir
+                      d (expand-file-name "dotfiles/wt/emacs/x.el" lib))
+                     main))
+      (should (equal (quite-roots-tests--build-dir d nil) main))
+      (should (equal (quite-roots-tests--build-dir
+                      d (expand-file-name
+                         "dotfiles-overlays/personal-config/main/check.sh" lib))
+                     main)))))
+
+(ert-deftest quite-roots-dotfiles-base-ignores-an-umbrella-overlay ()
+  (quite-roots-tests--need-quite)
+  (quite-roots-tests--in-umbrella-tree
+    (should (equal (quite-roots-tests--build-dir
+                    (dag/quite-descriptor "dotfiles" '("install.sh"))
+                    (expand-file-name
+                     "dotfiles-overlays/personal-config/x/emacs/config.el" lib))
+                   (expand-file-name "dotfiles/main/" lib)))))
 
 ;;; The dotfiles projects read `dag/quite-dotfiles-env' when config.el
 ;;; defines them.

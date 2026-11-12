@@ -144,6 +144,10 @@ fi
 dump() {
   local r text
   for r in "$@"; do
+    # An umbrella's store HEAD is detached and lags its main worktree's, so
+    # read that.
+    if [ -e "$r/main/.git" ]; then r="$r/main"
+    elif [ -e "$r/master/.git" ]; then r="$r/master"; fi
     [ -d "$r" ] || continue
     if git -C "$r" rev-parse --verify HEAD >/dev/null 2>&1; then
       text="$(git -C "$r" grep -h -I -e '^' HEAD -- . 2>/dev/null || true)"

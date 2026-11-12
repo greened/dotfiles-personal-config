@@ -185,15 +185,28 @@ quite builds DEFAULT-WORKTREE."
 
   (defun dag/quite-overlay-descriptor (overlay key-file)
     "Return a quite descriptor for the dotfiles overlay OVERLAY, marked by KEY-FILE.
-The main checkout is dotfiles-overlays/OVERLAY, but its worktrees sit under
-dotfiles-wt with names quite cannot match to OVERLAY. So the descriptor
-matches dotfiles-wt and tells the overlays apart by KEY-FILE, which only
-OVERLAY has. The second key file climbs from dotfiles-wt to the main
-checkout, which quite builds for a buffer in no worktree of OVERLAY."
-    (list :project-dir "dotfiles-wt"
-          :root-list (dag/quite-roots)
-          :key-files (list key-file
-                           (concat "../dotfiles-overlays/" overlay "/" key-file))))
+When dotfiles-overlays/OVERLAY under a root is a git-project umbrella, its
+worktrees sit inside it, so this is `dag/quite-descriptor' for that umbrella.
+
+Otherwise the main checkout is the flat clone dotfiles-overlays/OVERLAY, but
+its worktrees sit under dotfiles-wt with names quite cannot match to OVERLAY.
+So the descriptor matches dotfiles-wt and tells the overlays apart by
+KEY-FILE, which only OVERLAY has. The second key file climbs from dotfiles-wt
+to the main checkout, which quite builds for a buffer in no worktree of
+OVERLAY.
+
+The layout is read when the descriptor is made, so a converted overlay
+needs this file reloaded."
+    (let ((umbrella (concat "dotfiles-overlays/" overlay)))
+      (if (seq-some (lambda (root)
+                      (file-exists-p
+                       (expand-file-name (concat umbrella "/main/.git") root)))
+                    (dag/quite-roots))
+          (dag/quite-descriptor umbrella (list key-file))
+        (list :project-dir "dotfiles-wt"
+              :root-list (dag/quite-roots)
+              :key-files (list key-file
+                               (concat "../" umbrella "/" key-file))))))
 
   (defvar dag/quite-dotfiles-env ""
     "Shell text that sets up a machine's Emacs for a check.sh run.

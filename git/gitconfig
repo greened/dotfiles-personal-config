@@ -67,10 +67,13 @@
 # symlink.
 [includeIf "gitdir:~/src/"]
 	path = ~/lib/dotfiles-overlays/personal-config/git/identity-personal
+	path = ~/lib/dotfiles-overlays/personal-config/main/git/identity-personal
 [includeIf "gitdir:~/projects/"]
 	path = ~/lib/dotfiles-overlays/personal-config/git/identity-personal
+	path = ~/lib/dotfiles-overlays/personal-config/main/git/identity-personal
 [includeIf "gitdir:~/lib/"]
 	path = ~/lib/dotfiles-overlays/personal-config/git/identity-personal
+	path = ~/lib/dotfiles-overlays/personal-config/main/git/identity-personal
 
 # ORDER IS LOAD-BEARING.  This include must stay at the BOTTOM of the file.
 #

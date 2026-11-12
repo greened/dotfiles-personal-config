@@ -95,6 +95,24 @@ else
     fail=$((fail + 1))
 fi
 
+# A git-project umbrella is read through its main worktree. Its store's
+# detached HEAD stays at a commit without the term, as a conversion leaves it.
+new_repo "$root/umb-src" "nothing to see"
+git clone -q --bare "$root/umb-src" "$root/umb/.umb.git"
+printf 'gitdir: .umb.git\n' > "$root/umb/.git"
+git --git-dir="$root/umb/.umb.git" update-ref --no-deref HEAD \
+    "$(git -C "$root/umb-src" rev-parse HEAD)"
+git --git-dir="$root/umb/.umb.git" -c core.hooksPath=/dev/null \
+    worktree add -q "$root/umb/main" "$(git -C "$root/umb-src" branch --show-current)"
+printf 'qwvbn\n' > "$root/umb/main/a.txt"
+git -C "$root/umb/main" -c user.name=T -c user.email=t@example.com \
+    -c core.hooksPath=/dev/null commit -q -am b
+rc=0
+out="$(cd "$root" && GIT_CONFIG_SYSTEM=/dev/null \
+       SCRUB_AUDIT_PUBLIC="$root/umb" SCRUB_AUDIT_PRIVATE="$root/private" \
+       SCRUB_AUDIT_PROSE="$root/umb" "$here/scrub-audit.sh" 2>/dev/null)" || rc=$?
+check "an umbrella is read through its main worktree" '^[0-9]+ +qwvbn .*LIVE-IN-PUBLIC'
+
 # expect_dead DESCRIPTION MESSAGE... runs the audit in the mutant copy, and
 # asserts that it exits 1 and says every MESSAGE on stderr.
 expect_dead() {
