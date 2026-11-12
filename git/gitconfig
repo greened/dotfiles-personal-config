@@ -33,7 +33,7 @@
 [core]
 	# Global hook dispatcher: chains to any repo-local hook, and strips AI
 	# co-author trailers on non-work (personal) repos. See git/hooks/_chain.
-	hooksPath = ~/lib/dotfiles-overlays/personal-config/git/hooks
+	hooksPath = ~/lib/dotfiles-overlays/personal-config/main/git/hooks
 # useConfigOnly is what actually makes "no fallback" true.  Without it git
 # INVENTS an identity from the login name and the machine's hostname when none
 # is configured, and that is the worst of the available outcomes: a hostname is
