@@ -377,8 +377,7 @@ so an overlay that sets it must sort before this one in the overlay load.")
                        :build-target "personal-config"
                        :test-target "personal-config")
 
-  ;; devtools and coding-agent-recipes get projects once each has a check
-  ;; entry point.
+  ;; coding-agent-recipes gets a project once it has a check entry point.
 
   ;; The Python packages build with uv, which both machines have. Building the
   ;; distribution is deliberately NOT the build verb: it writes dist/ into the
