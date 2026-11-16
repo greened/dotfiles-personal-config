@@ -277,6 +277,13 @@ put "$root/url-clean" main b.txt "nothing to see"
 check "a clean push to a bare URL goes through" pushed \
       "$root/url-clean" --to "$root/url-clean.git" main
 
+# An empty remote serves no trees, so nothing is skipped.
+new_repo "$root/empty"
+put "$root/empty" main b.txt "see $key"
+git init -q --bare "$root/empty-remote.git"
+check "a push to an empty remote carrying a hit is refused" refused \
+      "$root/empty" --to "$root/empty-remote.git" main
+
 # The origin moves on with a commit this repo never fetched, so the remote
 # side of the push names a commit that is not here.
 for want in pushed refused; do
@@ -392,6 +399,105 @@ seed "$root/fname-move" main
 move "$root/fname-move" main b.txt "see-$key.txt"
 check "a file renamed to a name that is a hit is refused" refused \
       "$root/fname-move" main
+
+# A rewrite that keeps each tree the origin serves publishes no new content.
+# Each case rewrites a served commit whose file carries a hit, then force
+# pushes it.
+new_repo "$root/served"
+put "$root/served" main b.txt "see $key"
+seed "$root/served" main
+reword "$root/served" main "say it again"
+check "a message-only rewrite of a served tree goes through" pushed \
+      "$root/served" +main
+if grep -q '1 commit(s) carry a tree the remote already serves' <<<"$last_out"; then
+    echo "ok    a skipped tree is counted on stderr"
+    pass=$((pass + 1))
+else
+    echo "FAIL  a skipped tree is counted on stderr"
+    printf '%s\n' "$last_out" | sed 's/^/      /'
+    fail=$((fail + 1))
+fi
+
+new_repo "$root/served-url"
+put "$root/served-url" main b.txt "see $key"
+seed "$root/served-url" main
+reword "$root/served-url" main "say it again"
+check "a message-only rewrite pushed by URL goes through" pushed \
+      "$root/served-url" --to "$root/served-url.git" +main
+
+# A replace ref stands in a commit of the served tree for one with a new hit.
+dir="$root/served-replace"
+new_repo "$dir"
+put "$dir" main b.txt "see $key"
+seed "$dir" main
+put "$dir" main c.txt "see $key again"
+git -C "$dir" replace main "$(git -C "$dir" commit-tree \
+    "$(git -C "$dir" rev-parse 'main~1^{tree}')" -p main~1 -m "looks served")"
+check "a replace ref cannot make a new tree look served" refused "$dir" main
+
+# With log.showSignature on, git adds a line about each signed commit even
+# to a log with its own format.
+if command -v ssh-keygen >/dev/null; then
+    dir="$root/served-sig"
+    new_repo "$dir"
+    ssh-keygen -q -t ed25519 -N '' -C fixture -f "$root/sig-key"
+    git -C "$dir" config gpg.format ssh
+    git -C "$dir" config user.signingkey "$root/sig-key"
+    git -C "$dir" config log.showSignature true
+    put "$dir" main b.txt "see $key"
+    git -C "$dir" update-ref refs/heads/main "$(git -C "$dir" commit-tree -S \
+        "$(git -C "$dir" rev-parse 'main^{tree}')" -p main~1 -m "signed")"
+    seed "$dir" main
+    git -C "$dir" update-ref refs/heads/main "$(git -C "$dir" commit-tree -S \
+        "$(git -C "$dir" rev-parse 'main^{tree}')" -p main~1 -m "signed again")"
+    check "a signed message-only rewrite with showSignature goes through" pushed \
+          "$dir" +main
+else
+    echo "skip  a signed message-only rewrite with showSignature: no ssh-keygen"
+fi
+
+new_repo "$root/served-msg"
+put "$root/served-msg" main b.txt "see $key"
+seed "$root/served-msg" main
+reword "$root/served-msg" main "say it again for $key"
+check "a served tree still has its new message scanned" refused \
+      "$root/served-msg" +main
+
+new_repo "$root/served-new"
+put "$root/served-new" main b.txt "see $key"
+seed "$root/served-new" main
+put "$root/served-new" main c.txt "nothing to see"
+commit_tree "$root/served-new" main "$(git -C "$root/served-new" rev-parse 'main^{tree}')" \
+            "$(git -C "$root/served-new" rev-parse main~2)"
+check "a rewrite with a new tree is scanned whole" refused \
+      "$root/served-new" +main
+
+# An origin branch whose history is missing a commit here makes the served
+# trees unlistable. It is older than the served commit, so the listing names
+# the served tree before it fails, and only discarding that partial list
+# scans the commit.
+dir="$root/served-fail"
+new_repo "$dir"
+put "$dir" main b.txt "see $key"
+seed "$dir" main
+GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' \
+    commit_tree "$dir" old "$(git -C "$dir" rev-parse 'main^{tree}')"
+lost="$(git -C "$dir" rev-parse old)"
+GIT_COMMITTER_DATE='2000-01-02T00:00:00Z' \
+    commit_tree "$dir" old "$(git -C "$dir" rev-parse 'main^{tree}')" old
+seed "$dir" old
+rm "$dir/.git/objects/${lost:0:2}/${lost:2}"
+reword "$dir" main "say it again"
+check "trees that cannot be listed mean every commit is scanned" refused \
+      "$dir" +main
+if grep -q 'scanning every commit' <<<"$last_out"; then
+    echo "ok    the scan says why it scanned every commit"
+    pass=$((pass + 1))
+else
+    echo "FAIL  the scan says why it scanned every commit"
+    printf '%s\n' "$last_out" | sed 's/^/      /'
+    fail=$((fail + 1))
+fi
 
 # The pre-commit half, run straight against a staged set, as git would run it.
 # precommit DESCRIPTION WANT DIR runs the hook in DIR. WANT is "passed" or

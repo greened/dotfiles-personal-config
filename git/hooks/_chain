@@ -849,6 +849,11 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
       # from one of its remote-tracking refs. A push to a bare URL has no
       # tracking refs, so it scans more. That is the safe direction.
       #
+      # A commit whose tree is already in that remote history adds no content
+      # the remote lacks, so its diff and file names are not scanned. That
+      # spares a rewrite that changed only messages. Its message is still
+      # scanned, since a message is not part of the tree.
+      #
       # A merge commit is scanned for what its resolution changed, so a hit
       # added while resolving it is caught. git skips that for an octopus
       # merge and says so only on stderr, so a second pass diffs each octopus
@@ -856,15 +861,18 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
       # the safe direction.
       zero=0000000000000000000000000000000000000000
       push_revs=()
+      served_revs=()
       while read -r _ lsha _ rsha; do
         [ "${lsha:-$zero}" != "$zero" ] || continue
         push_revs+=("$lsha")
         if [ "$rsha" != "$zero" ] && git cat-file -e "$rsha^{commit}" 2>/dev/null; then
           push_revs+=("^$rsha")
+          served_revs+=("$rsha")
         fi
       done < <(printf '%s\n' "$push_refs")
       if [ "${#push_revs[@]}" -gt 0 ]; then
         push_revs+=(--not "--remotes=${1:-origin}")
+        served_revs+=("--remotes=${1:-origin}")
         # The cap bounds how long one push can hold the terminal. A push over
         # it is usually a whole history going to a new remote, and stopping
         # to ask is better than stalling with no word. A repo that pushes
@@ -885,16 +893,44 @@ if [ "$hook" = "pre-commit" ] || [ "$hook" = "pre-push" ]; then
           echo "scrub:   git config scrub.pushMaxCommits $n_commits" >&2
           exit 1
         fi
+        # Only root trees are listed, one per remote commit, so the cost is
+        # linear in the remote's history. Listing every subtree and blob
+        # would cost far more, and a root tree match already means all the
+        # content is served. A failure leaves the set empty, so every commit
+        # is scanned.
+        #
+        # A signature line would corrupt each listing, and a replace ref
+        # could make a commit report a tree it does not have.
+        glog=(git --no-replace-objects log --no-show-signature)
+        if ! "${glog[@]}" --format=%T "${served_revs[@]}" -- \
+               > "$scan_dir/served" 2>/dev/null; then
+          : > "$scan_dir/served"
+          echo "scrub: cannot list the trees the remote serves, so scanning every commit." >&2
+        fi
+        if ! "${glog[@]}" --format='%H %T' "${push_revs[@]}" -- \
+               > "$scan_dir/pushed" 2>/dev/null ||
+           ! LC_ALL=C awk 'FILENAME == ARGV[1] { s[$1]; next } !($2 in s) { print $1 }' \
+               "$scan_dir/served" "$scan_dir/pushed" > "$scan_dir/scan"; then
+          echo "scrub: cannot list the commits being pushed, so refusing." >&2
+          exit 1
+        fi
+        n_skipped=$(( $(wc -l < "$scan_dir/pushed") - $(wc -l < "$scan_dir/scan") ))
+        if [ "$n_skipped" -gt 0 ]; then
+          echo "scrub: $n_skipped commit(s) carry a tree the remote already serves, so only their messages are scanned." >&2
+        fi
         octopus=(--min-parents=3 --diff-merges=first-parent)
-        if ! { git log --format= --root --remerge-diff "${diff_opts[@]}" \
-                 "${push_revs[@]}" -- &&
-               git log --format= --root "${octopus[@]}" "${diff_opts[@]}" \
-                 "${push_revs[@]}" --; } 2>/dev/null | scrub_split "$scan_dir" ||
-           ! { git log --format= --root --remerge-diff "${name_opts[@]}" \
-                 "${push_revs[@]}" -- &&
-               git log --format= --root "${octopus[@]}" "${name_opts[@]}" \
-                 "${push_revs[@]}" --; } > "$scan_dir/names" 2>/dev/null ||
-           ! git log -z --format='%h%n%B' "${push_revs[@]}" -- \
+        if { [ -s "$scan_dir/scan" ] &&
+             { ! { "${glog[@]}" --no-walk=unsorted --format= --root --remerge-diff \
+                     "${diff_opts[@]}" --stdin -- < "$scan_dir/scan" &&
+                   "${glog[@]}" --no-walk=unsorted --format= --root "${octopus[@]}" \
+                     "${diff_opts[@]}" --stdin -- < "$scan_dir/scan"; } 2>/dev/null |
+                   scrub_split "$scan_dir" ||
+               ! { "${glog[@]}" --no-walk=unsorted --format= --root --remerge-diff \
+                     "${name_opts[@]}" --stdin -- < "$scan_dir/scan" &&
+                   "${glog[@]}" --no-walk=unsorted --format= --root "${octopus[@]}" \
+                     "${name_opts[@]}" --stdin -- < "$scan_dir/scan"; } \
+                   > "$scan_dir/names" 2>/dev/null; }; } ||
+           ! "${glog[@]}" -z --format='%h%n%B' "${push_revs[@]}" -- \
                > "$scan_dir/msgs" 2>/dev/null; then
           echo "scrub: cannot read the commits being pushed, so refusing." >&2
           exit 1
